@@ -1,6 +1,15 @@
 import asyncio
 import base64
+import sys
 from pathlib import Path
+
+# 載入設定
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+try:
+    import settings
+except ImportError:
+    from config import settings
+
 try:
     from ollama import Client, AsyncClient
 except ImportError:
@@ -13,12 +22,12 @@ except ImportError:
     from logger import logger, error, debug, info, warning
 
 
-# Ollama API 設定
-OLLAMA_BASE_URL = "http://YOUR_IP:11434"
-DEFAULT_MODEL = "qwen3.5:9b"  # 或 qwen2.5-vl-large
+# Ollama API 設定（從 config/settings.py 讀取）
+OLLAMA_HOST = settings.OLLAMA_HOST
+DEFAULT_MODEL = settings.OLLAMA_MODEL
 
 # System Prompt 規格（可從 config/prompts.json 讀取）
-DEFAULT_SYSTEM_PROMPT = """
+DEFAULT_SYSTEM_PROMPT = f"""
 你是一個公文 OCR 文字辨識與欄位提取專家。
 
 請分析提供的公文圖片，並提取以下欄位：
@@ -41,7 +50,7 @@ class OllamaClient:
     def __init__(self, model: str = DEFAULT_MODEL, system_prompt: str = None):
         self._model = model
         self._system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
-        self._client = AsyncClient(host=OLLAMA_BASE_URL, timeout=None)
+        self._client = AsyncClient(host=OLLAMA_HOST, timeout=None)
 
     @property
     def model(self) -> str:
@@ -137,7 +146,6 @@ class OllamaClient:
 
 
 if __name__ == "__main__":
-    import asyncio
     import json
     sys_prompt = ""
     with open("config/prompts.json", "r", encoding="utf-8") as f:
@@ -146,15 +154,17 @@ if __name__ == "__main__":
 
     async def run_test():
         client = OllamaClient(
-            model="CVTA-OCR",
+            model=settings.OLLAMA_MODEL,
             system_prompt=sys_prompt
         )
 
         try:
             # 測試：傳入 tests/golden_dataset 中的第一張圖片
-            image_path = "E:\\ProgramData\\Repo\\公文系統\\V3\\CVTA-Documents-Analyzer-V3\\tests\\golden_dataset\\115064_0001.jpg"
+            image_path = "E:\\ProgramData\\Repo\\公文系統\\V3\\CVTA-Documents-Analyzer-V3\\tests\\golden_dataset\\115061_0001.jpg"
             result = await client.generate(image_path)
             print("以下是測試結果:\n" + "\n".join(result))
+        except Exception as e:
+            print(f"測試異常：{e}")
         finally:
             pass
 
