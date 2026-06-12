@@ -10,7 +10,7 @@
 
 | 任務名稱 | 任務說明與核心成果物 | 驗收標準 (Acceptance Criteria) | 負責人 (Assigned To) | 狀態 (Status) |
 | :---- | :---- | :---- | :---- | :---- |
-| **1.1 基礎環境與專案骨架初始化** | 依據架構規格書建立目錄結構，並**實作根目錄 PROJECT_REFERENCE.md 導引文件模板**。確立「文件同步更新」之 Check-in 規範。 **成果物：** 專案骨架、PROJECT_REFERENCE.md、requirements.txt。 | 1\. 執行 pip install 無誤。 2\. 建立符合 SDD 規範的導引文件，並包含核心 Schema 摘要。 | 待指派 | 未開始 |
+| **1.1 基礎環境與專案骨架初始化** | 依據架構規格書建立目錄結構，並**實作根目錄 PROJECT_REFERENCE.md 導引文件模板**。確立「文件同步更新」之 Check-in 規範。 **成果物：** 專案骨架、PROJECT_REFERENCE.md、pyproject.toml。 | 1\. 執行 uv sync 無誤。 2\. 建立符合 SDD 規範的導引文件，並包含核心 Schema 摘要。 | 待指派 | 未開始 |
 | **1.2 全域日誌系統 (Logger) 實作** | 於 src/infrastructure/logger.py 實現全域日誌配置。串接 Python 標準 logging 模組，配置終端機（Console）顏色高亮輸出，並封裝 app.log 與 error.log 的分層雙寫邏輯。需支援 DEBUG, INFO, WARNING, ERROR 四個日誌級別的配置。 **成果物：** 全域 Logger 模組。 | 1\. 測試呼叫 logger.warning()，終端機須噴出高亮黃字，且 logs/app.log 成功記錄。 2\. 發生 Exception 時呼叫 logger.error(..., exc\_info=True)，error.log 須完整捕獲 Traceback。 3\. 驗證 DEBUG, INFO, WARNING, ERROR 各級別日誌的輸出目的地與格式符合規格。 | 待指派 | 未開始 |
 | **1.3 Ollama 多模態客戶端實作** | 於 src/infrastructure/ollama\_client.py 封裝與地端 Ollama API 的通訊。讀取 config/prompts.json 中的規格化 System Prompt，將公文圖檔進行 Base64 編碼，並在 Temperature \= 0.0 條件下發送請求。 **成果物：** Ollama 整合客戶端驅動代碼。 | 1\. 傳入單張真實公文圖片，能穩定接收到 Ollama 回傳的純 JSON 字串。 2\. 字串內嚴禁包含 \`\`\`json 等 Markdown 污染標記，確保 json.loads() 可直接解析。 | 待指派 | 未開始 |
 | **1.4 日期校驗閘門 (Validator) 實作** | 於 src/domain/validator.py 實現資料合約驗證。解析並確保 7 個欄位型態正確（特別是 key\_points 必須為 Array），並執行資料型態調和，例如將 `key_points` 陣列轉換為逗號分隔字串，以符合儲存層要求。計算`{doc_date} - {current_date}`的絕對值天數差，執行 90 天安全窗口校驗演算法。 **成果物：** 資料合約與時間校驗核心邏輯。 | 1\. 傳入 2026-04-17（今日為 2026-06-11，約55天差），判定在 90 天安全閾值內，不報警告。 2\. 傳入故意幻覺寫錯的日期（如2016年），系統須正確識別並回傳 is\_valid=False 與警告訊息。 3\. 驗證器需能正確將 `key_points` 欄位從陣列型態轉換為逗號分隔字串。 | 待指派 | 未開始 |

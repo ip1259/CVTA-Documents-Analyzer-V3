@@ -69,7 +69,8 @@
 `│   ├── input_scans/            # 待處理的公文掃描檔`  
 `│   └── output_results/         # 產出的 JSON 或 CSV 檔案`  
 `│`  
-`├── requirements.txt            # 依賴套件清單 (PySide6, requests, openpyxl, google-api-python-client)`  
+`├── pyproject.toml              # uv 專案設定與依賴清單 (PySide6, requests, openpyxl, etc.)`  
+`├── uv.lock                     # uv 自動生成的依賴鎖定檔`  
 `└── .gitignore                  # 排除金鑰、日誌與臨時暫存檔`
 
 ## **4\. 全域日誌系統規格 (Logging System Contract)**
