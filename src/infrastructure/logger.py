@@ -74,6 +74,8 @@ app_logger = logging.getLogger("cvta")
 # ============================================
 # 封裝化的 Logger 函式（支援 exception 捕捉）
 # ============================================
+
+
 def get_logger(name: str = "cvta") -> logging.Logger:
     """取得命名日誌記錄器"""
     logger = logging.getLogger(name)

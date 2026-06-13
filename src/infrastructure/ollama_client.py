@@ -1,25 +1,9 @@
 import asyncio
 import base64
-import sys
 from pathlib import Path
-
-# 載入設定
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-try:
-    import settings
-except ImportError:
-    from config import settings
-
-try:
-    from ollama import Client, AsyncClient
-except ImportError:
-    from ollama import Client  # type: ignore
-
-# 避免直接執行時匯入問題
-try:
-    from .logger import logger, error, debug, info, warning
-except ImportError:
-    from logger import logger, error, debug, info, warning
+from config import settings
+from ollama import AsyncClient
+from src.infrastructure.logger import error, debug, info, warning
 
 
 # Ollama API 設定（從 config/settings.py 讀取）
@@ -27,7 +11,7 @@ OLLAMA_HOST = settings.OLLAMA_HOST
 DEFAULT_MODEL = settings.OLLAMA_MODEL
 
 # System Prompt 規格（可從 config/prompts.json 讀取）
-DEFAULT_SYSTEM_PROMPT = f"""
+DEFAULT_SYSTEM_PROMPT = """
 你是一個公文 OCR 文字辨識與欄位提取專家。
 
 請分析提供的公文圖片，並提取以下欄位：
