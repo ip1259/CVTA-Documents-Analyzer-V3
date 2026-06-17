@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, date
 
-from src.infrastructure.logger import info, warning, error, catch_exception
+from src.infrastructure.logger import info, warning, error
 
 # from src.infrastructure.ollama_client import OllamaClient
 
@@ -153,7 +153,6 @@ class OcrDataValidator:
 
         return True, ""
 
-    @catch_exception
     def validate_and_prepare(self, raw_data: dict) -> tuple[bool, str, dict]:
         """
         一鍵處理驗證 + 預備 CSV
