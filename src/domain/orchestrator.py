@@ -34,6 +34,7 @@ class DocumentProcessor:
             warning("將使用預設參數")
             return ""
 
+    @catch_exception
     async def process_single(self, image_path: str) -> dict:
         """
         處理單張公文圖片
@@ -71,7 +72,7 @@ class DocumentProcessor:
             }
 
         except Exception as e:
-            error(f"處理失敗 {image_path}: {e}")
+            error(f"處理失敗 {image_path}: {e}", exc_info=True)
             return {
                 "success": False,
                 "image_path": image_path,
