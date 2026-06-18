@@ -121,7 +121,7 @@ class DocumentProcessor:
             "success": sum(1 for r in results if r.get("success")),
             "failed": sum(1 for r in results if not r.get("success")),
             "csv_file": str(self._storage._csv_file),
-            "results": results
+            "results": prepared_data
         }
 
 
