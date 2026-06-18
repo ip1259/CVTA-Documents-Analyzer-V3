@@ -1,6 +1,6 @@
 import asyncio
 from pathlib import Path
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional, Callable, Awaitable
 from googleapiclient.http import MediaFileUpload
 from src.infrastructure.logger import info, error, warning, debug
 from src.infrastructure.google_workspace import GoogleServiceAccount
@@ -77,11 +77,14 @@ class GoogleDriveService:
         self,
         file_paths: List[str],
         folder_id: str,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        conflict_solve_callback: Optional[Callable[[
+            str], Awaitable[bool]]] = None
     ) -> List[Dict[str, str]]:
         """
         批量上傳檔案到指定資料夾
         :param progress_callback: 進度回呼函式，接收 (已完成數, 總總數, 當前檔名)
+        :param conflict_solve_callback: 衝突解決回呼，接收檔名並回傳是否覆蓋 (True: 覆蓋, False: 沿用現有 ID)
         :return: 包含成功上傳檔案 ID 的列表 [{"name": "...", "id": "..."}]
         """
         if not self._gs.authenticated or not self._gs.upload_drive_service:
@@ -94,31 +97,49 @@ class GoogleDriveService:
                 warning(f"檔案不存在，跳過上傳: {file_path}")
                 return None
 
-            def _sync_upload():
-                file_metadata = {
-                    'name': path_obj.name,
-                    'parents': [folder_id]
-                }
-                media = MediaFileUpload(
-                    str(path_obj),
-                    resumable=True
-                )
-                # 使用上傳專用的 drive_service (OAuth 2.0 驗證)
-                # 這樣可以利用使用者的配額，避免服務帳戶配額不足的問題
-                return self._gs.upload_drive_service.files().create(
-                    body=file_metadata,
-                    media_body=media,
-                    fields='id, name',
-                    supportsAllDrives=True
-                ).execute()
+            # 1. 檢查檔案是否存在
+            existing_id = await self.find_file_id(path_obj.name, folder_id)
+            should_update = False
+
+            if existing_id:
+                if conflict_solve_callback:
+                    # 呼叫 UI 回呼詢問使用者
+                    should_update = await conflict_solve_callback(path_obj.name)
+
+                if not should_update:
+                    info(
+                        f"檔案 '{path_obj.name}' 已存在且使用者選擇不覆蓋，沿用現有 ID: {existing_id}")
+                    return {'id': existing_id, 'name': path_obj.name}
+
+            def _sync_perform():
+                media = MediaFileUpload(str(path_obj), resumable=True)
+                if should_update and existing_id:
+                    # 執行更新 (Overwrite)
+                    return self._gs.upload_drive_service.files().update(
+                        fileId=existing_id,
+                        media_body=media,
+                        fields='id, name',
+                        supportsAllDrives=True
+                    ).execute()
+                else:
+                    # 執行建立 (New Upload)
+                    file_metadata = {'name': path_obj.name,
+                                     'parents': [folder_id]}
+                    return self._gs.upload_drive_service.files().create(
+                        body=file_metadata,
+                        media_body=media,
+                        fields='id, name',
+                        supportsAllDrives=True
+                    ).execute()
 
             try:
-                info(f"開始上傳檔案: {path_obj.name}")
-                result = await asyncio.to_thread(_sync_upload)
-                info(f"上傳成功: {path_obj.name} (ID: {result.get('id')})")
+                action_str = "更新" if should_update else "上傳"
+                info(f"開始{action_str}檔案: {path_obj.name}")
+                result = await asyncio.to_thread(_sync_perform)
+                info(f"{action_str}成功: {path_obj.name} (ID: {result.get('id')})")
                 return result
             except Exception as e:
-                error(f"上傳檔案 {path_obj.name} 失敗: {e}")
+                error(f"{action_str}檔案 {path_obj.name} 失敗: {e}")
                 return None
 
         completed_count = 0

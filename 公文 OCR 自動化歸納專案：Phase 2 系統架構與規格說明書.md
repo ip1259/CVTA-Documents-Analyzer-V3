@@ -19,7 +19,7 @@
 * **基礎設施與驅動層 (Infrastructure / Drivers Layer)：**  
   * Ollama Client：封裝多模態大模型通訊，設定 Temperature \= 0.0，確保結構化輸出。  
   * Logger：全域日誌配置器，負責分層雙寫。  
-  * Google Workspace Connector：整合 Google Drive 與 Sheets API，控管權限、網路超時與例外重試。
+  * Google Workspace Connector：整合 Google Drive 與 Sheets API，控管權限、網路超時與例外重試，並包含上傳前的檔案重複檢查與衝突解決（覆蓋/跳過）邏輯。
 
 ## **3\. 完整專案目錄結構規格 (Directory Layout Specification)**
 

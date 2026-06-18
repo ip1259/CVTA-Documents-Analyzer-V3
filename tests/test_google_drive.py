@@ -3,7 +3,7 @@ import sys
 import os
 import asyncio
 from pathlib import Path
-from tkinter import filedialog, Tk
+from tkinter import filedialog, Tk, messagebox
 
 # 將專案根目錄加入路徑以確保能載入 config 與 src
 project_root = Path(__file__).parent.parent
@@ -118,10 +118,6 @@ async def test_google_drive_upload():
     """測試檔案上傳功能，使用 filedialog 選擇檔案"""
     info("開始 Google Drive 上傳測試...")
 
-    # 初始化 Tkinter 並隱藏主視窗
-    root = Tk()
-    root.withdraw()
-
     # 讓使用者選擇檔案 (可多選)
     file_paths = filedialog.askopenfilenames(title="請選擇要測試上傳的檔案")
     if not file_paths:
@@ -145,18 +141,33 @@ async def test_google_drive_upload():
     if not fid:
         error(f"找不到資料夾 '{folder_name}'，無法進行上傳測試。")
         return
+        
+    async def conflict_handler(filename: str) -> bool:
+        """
+        處理檔案衝突的回呼函式
+        使用 tkinter messagebox 詢問使用者
+        """
+        return messagebox.askyesno(
+            "檔案衝突",
+            f"雲端資料夾中已存在檔案：\n'{filename}'\n\n是否要覆蓋既有檔案？\n(選「否」則會保留舊檔並沿用其 ID)"
+        )
 
     # 2. 呼叫批量上傳 (支援進度回報)
     info(f"準備上傳 {len(file_paths)} 個檔案至 '{folder_name}'...")
     results = await drive_service.upload_files(
         list(file_paths),
         fid,
-        progress_callback=lambda cur, tot, name: info(f"上傳進度：{cur}/{tot} - {name}")
+        progress_callback=lambda cur, tot, name: info(f"上傳進度：{cur}/{tot} - {name}"),
+        conflict_solve_callback=conflict_handler
     )
     info(f"上傳測試完成，成功上傳 {len(results)} 筆檔案。")
 
 
 if __name__ == "__main__":
+    # 初始化 Tkinter 並隱藏主視窗，確保 UI 控制項在主執行緒中初始化
+    tk_root = Tk()
+    tk_root.withdraw()
+
     # 1. 執行同步 API 測試
     test_list_google_drive_files()
 
