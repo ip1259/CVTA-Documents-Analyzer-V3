@@ -1,2 +1,9 @@
 data
 logs
+tests/golden_dataset/
+__pycache__
+
+config/google_key.json
+config/client_secret.json
+config/token.json
+config/*.cfg
