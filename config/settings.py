@@ -32,37 +32,57 @@ OUTPUT_DIR = "output_results"
 GOOGLE_KEY_PATH = CONFIG_DIR / "google_key.json"
 GOOGLE_CLIENT_SECRET_PATH = CONFIG_DIR / "client_secret.json"
 GOOGLE_TOKEN_PATH = CONFIG_DIR / "token.json"
+GOOGLE_SPREADSHEET_ID = None
 
 
 # --- 2. 自動建立預設 config 檔 (若不存在任何 .cfg) ---
 def _ensure_default_config():
-    """若 config 目錄下沒有任何 .cfg 檔案，則建立一個預設的 settings.cfg"""
-    cfg_files = [f for f in os.listdir(CONFIG_DIR) if f.endswith('.cfg')]
-    if not cfg_files:
-        default_cfg_path = CONFIG_DIR / "settings.cfg"
-        config = configparser.ConfigParser(interpolation=None)
-        config['Ollama'] = {
+    """檢查 settings.cfg 是否存在，並自動補齊缺失的 Section 或 Key，而不覆蓋既有設定。"""
+    default_cfg_path = CONFIG_DIR / "settings.cfg"
+    config = configparser.ConfigParser(interpolation=None)
+
+    # 如果檔案已存在，先載入既有設定
+    if default_cfg_path.exists():
+        config.read(default_cfg_path, encoding='utf-8')
+
+    # 定義預期要有的完整結構與預設值
+    required_structure = {
+        'Ollama': {
             'OLLAMA_HOST': OLLAMA_HOST,
             'OLLAMA_MODEL': OLLAMA_MODEL
-        }
-        config['System'] = {
+        },
+        'System': {
             'SYSTEM_NAME': SYSTEM_NAME,
             'VERSION': VERSION,
             'SYSTEM_LANGUAGE': SYSTEM_LANGUAGE
-        }
-        config['Rules'] = {
-            'DATE_VALIDATION_DAYS': str(DATE_VALIDATION_DAYS)
-        }
-        config['Logging'] = {
+        },
+        'Rules': {'DATE_VALIDATION_DAYS': str(DATE_VALIDATION_DAYS)},
+        'Logging': {
             'LOG_LEVEL': LOG_LEVEL,
             'LOG_FORMAT': LOG_FORMAT,
             'LOG_DIR': LOG_DIR
-        }
-        config['Storage'] = {
+        },
+        'Storage': {
             'DATA_DIR': DATA_DIR,
             'INPUT_DIR': INPUT_DIR,
             'OUTPUT_DIR': OUTPUT_DIR
-        }
+        },
+        'Google': {'GOOGLE_SPREADSHEET_ID': ''}
+    }
+
+    modified = False
+    for section, options in required_structure.items():
+        if not config.has_section(section):
+            config.add_section(section)
+            modified = True
+
+        for key, value in options.items():
+            if not config.has_option(section, key):
+                config.set(section, key, str(value))
+                modified = True
+
+    # 只有在有新增內容或檔案不存在時才寫入磁碟
+    if modified or not default_cfg_path.exists():
         with open(default_cfg_path, 'w', encoding='utf-8') as f:
             config.write(f)
 
