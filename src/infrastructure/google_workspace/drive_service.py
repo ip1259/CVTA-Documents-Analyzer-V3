@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 from typing import List, Dict, Optional, Callable, Awaitable
 from googleapiclient.http import MediaFileUpload
+from google.auth.exceptions import RefreshError
 from src.infrastructure.logger import info, error, warning, debug
 from src.infrastructure.google_workspace import GoogleServiceAccount
 
@@ -83,13 +84,28 @@ class GoogleDriveService:
     ) -> List[Dict[str, str]]:
         """
         批量上傳檔案到指定資料夾
-        :param progress_callback: 進度回呼函式，接收 (已完成數, 總總數, 當前檔名)
-        :param conflict_solve_callback: 衝突解決回呼，接收檔名並回傳是否覆蓋 (True: 覆蓋, False: 沿用現有 ID)
+        :param progress_callback: 進度回呼函式，接收 (已完成數，總總數，當前檔名)
+        :param conflict_solve_callback: 衝突解決回呼，接收檔名並回傳是否覆蓋 (True: 覆蓋，False: 沿用現有 ID)
         :return: 包含成功上傳檔案 ID 的列表 [{"name": "...", "id": "..."}]
         """
         if not self._gs.authenticated or not self._gs.upload_drive_service:
             warning("Google API 未認證或上傳服務未就緒，無法上傳檔案")
             return []
+
+        async def _retry_on_401(operation):
+            """
+            當遇到 401 錯誤時，嘗試重新認證後重試操作。
+            若重新認證失敗，則拋出原始錯誤。
+            """
+            try:
+                return await operation()
+            except RefreshError:
+                error("Google API Token 過期，正在重新認證...")
+                if self._gs.refresh_or_reauth():
+                    info("Token 已更新，重試上傳...")
+                    return await operation()
+                else:
+                    raise
 
         async def _upload_single(file_path: str):
             path_obj = Path(file_path)
@@ -138,8 +154,10 @@ class GoogleDriveService:
                 result = await asyncio.to_thread(_sync_perform)
                 info(f"{action_str}成功: {path_obj.name} (ID: {result.get('id')})")
                 return result
+            except RefreshError as e:
+                raise e
             except Exception as e:
-                error(f"{action_str}檔案 {path_obj.name} 失敗: {e}")
+                error(f"{action_str}檔案 {path_obj.name} 失敗：{e}")
                 return None
 
         completed_count = 0
@@ -167,3 +185,21 @@ class GoogleDriveService:
         successful_uploads = [res for res in results if res is not None]
         info(f"批量上傳完成，成功 {len(successful_uploads)}/{len(file_paths)} 筆檔案")
         return successful_uploads
+
+    async def _retry_on_401(self, operation):
+        """
+        當遇到 401 錯誤時，嘗試重新認證後重試操作。
+        若重新認證失敗，則拋出原始錯誤。
+        """
+        try:
+            return await operation()
+        except RefreshError:
+            error("Google API Token 過期，正在重新認證...")
+            if self._gs.refresh_or_reauth():
+                info("Token 已更新，重試操作...")
+                return await operation()
+            else:
+                warning("Token 無法自動更新，請重新登入 Google API 認證")
+                raise RefreshError(
+                    "Google API Token 過期且無法自動更新，請重新登入認證"
+                )
