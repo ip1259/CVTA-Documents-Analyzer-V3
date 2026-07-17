@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from tkinter import messagebox, filedialog
 import asyncio
-from config.settings import DATA_DIR, OUTPUT_DIR, VERSION
+from src.config.settings import DATA_DIR, OUTPUT_DIR, VERSION
 from src.infrastructure.logger import info, catch_exception
 
 

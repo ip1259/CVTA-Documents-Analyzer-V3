@@ -1,4 +1,4 @@
-from enum import Enum, auto
+from enum import Enum
 from pathlib import Path
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request

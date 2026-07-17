@@ -12,3 +12,14 @@ dependencies = [
     "pyside6>=6.8.0",
     "pyside6-ds>=4.7",
 ]
+
+[tool.pyrefly]
+project-includes = [
+    "src/**/*.py",
+    "config/**/*.py",
+]
+search-path = ["."]
+extra-paths = [
+    "src/",
+    "config/"
+]
