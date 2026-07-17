@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Google Sheets API 服務層 - 公文資料同步至 Google 表格。"""
 
+from typing import Optional
 import re
 from typing import Any
 from googleapiclient.errors import HttpError
 
 from config import settings
-from src.infrastructure.google_workspace import GoogleServiceAccount
-from src.infrastructure.logger import info, error, warning
+from infrastructure.google_workspace import GoogleServiceAccount
+from infrastructure.logger import info, error, warning
 
 
 class GoogleSheetsError(Exception):
@@ -35,7 +36,7 @@ SHEET_COLUMNS = [
 class GoogleSheetsService:
     """Google Sheets API 服務封裝。"""
 
-    def __init__(self, google_account_service: GoogleServiceAccount, spreadsheet_id: str = None):
+    def __init__(self, google_account_service: GoogleServiceAccount, spreadsheet_id: Optional[str] = None):
         """初始化 Google Sheets 服務。
 
         Args:
@@ -124,6 +125,13 @@ class GoogleSheetsService:
                 return props.get("sheetId")
 
         raise GoogleSheetsError(f"在 Spreadsheet 中找不到名為 '{sheet_name}' 的工作表")
+
+    def get_sheet_id_by_name(self, sheet_name: str) -> Optional[int]:
+        """透過工作表標題取得對應的 sheetId，若找不到則回傳 None。"""
+        try:
+            return self._get_sheet_id(sheet_name)
+        except GoogleSheetsError:
+            return None
 
     def _get_last_row(self, sheet_name: str) -> int:
         """透過讀取 A 欄來取得指定工作表中有資料的最後一列列號 (1-based)。"""
@@ -237,3 +245,24 @@ class GoogleSheetsService:
             return display_text
         url = f"https://drive.google.com/file/d/{file_id}/view"
         return f'=HYPERLINK("{url}", "{display_text}")'
+
+    def duplicate_sheet(self, sheet_name: str, new_sheet_name: str) -> None:
+        """複製工作表。"""
+        try:
+            sheet_id = self._get_sheet_id(sheet_name)
+
+            requests = [{
+                "duplicateSheet": {
+                    "sourceSheetId": sheet_id,
+                    "newSheetName": new_sheet_name,
+                    "insertSheetIndex": 1
+                }
+            }]
+
+            self._service.spreadsheets().batchUpdate(
+                spreadsheetId=self.spreadsheet_id,
+                body={"requests": requests}
+            ).execute()
+        except Exception as e:
+            error(f"複製工作表失敗: {e}")
+            raise GoogleSheetsError(f"複製工作表失敗: {e}")

@@ -1,10 +1,26 @@
+from enum import Enum, auto
 from pathlib import Path
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from src.infrastructure.logger import info, warning, error
+from infrastructure.logger import info, warning, error
+from config.settings import GOOGLE_KEY_PATH, GOOGLE_CLIENT_SECRET_PATH, GOOGLE_TOKEN_PATH
+
+
+class ConflictChoice(Enum):
+    SKIP = "略過"
+    OVERWRITE = "更新"
+    NEW_VERSION = "上傳"
+
+
+class UnauthenticatedError(Exception):
+    """未通過 Google 認證的自訂例外"""
+
+    def __init__(self, message="Google API 未認證"):
+        self.message = message
+        super().__init__(self.message)
 
 
 class GoogleServiceAccount:
@@ -12,9 +28,9 @@ class GoogleServiceAccount:
 
     def __init__(
         self,
-        service_account_path: str,
-        client_secret_path: str = None,
-        token_path: str = None,
+        service_account_path: str = GOOGLE_KEY_PATH,
+        client_secret_path: str = GOOGLE_CLIENT_SECRET_PATH,
+        token_path: str = GOOGLE_TOKEN_PATH,
         project_id: str = None
     ):
         try:
@@ -27,34 +43,30 @@ class GoogleServiceAccount:
                 "https://www.googleapis.com/auth/drive",
                 "https://www.googleapis.com/auth/spreadsheets"
             ]
-            cred_general = service_account.Credentials.from_service_account_file(
+            self._cred_general = service_account.Credentials.from_service_account_file(
                 service_account_path,
                 scopes=general_scopes
             )
-            self._project_id = project_id or cred_general.project_id
-            self._service_account_email = cred_general.service_account_email
-            self._drive_service = build(
-                "drive", "v3", credentials=cred_general)
-            self._sheets_service = build(
-                "sheets", "v4", credentials=cred_general)
+            self._cred_user = None
+            self._project_id = project_id or self._cred_general.project_id
+            self._service_account_email = self._cred_general.service_account_email
 
             # 2. 建立用於檔案上傳的專用憑證 (使用 OAuth 2.0 User Flow)
             # 使用 User OAuth 2.0 可以解決服務帳戶 (Service Account) 沒有儲存空間配額的問題。
-            self._upload_drive_service = None
             if client_secret_path and token_path:
                 upload_scopes = ["https://www.googleapis.com/auth/drive.file"]
-                cred_user = None
+                self._cred_user = None
 
                 # 嘗試載入現有的 token
                 t_path = Path(token_path)
                 if t_path.exists():
-                    cred_user = Credentials.from_authorized_user_file(
+                    self._cred_user = Credentials.from_authorized_user_file(
                         str(t_path), upload_scopes)
 
                 # 如果 token 無效或不存在，則執行 OAuth2 授權流程
-                if not cred_user or cred_user.expired:
-                    if cred_user and cred_user.expired and cred_user.refresh_token:
-                        cred_user.refresh(Request())
+                if not self._cred_user or self._cred_user.expired:
+                    if self._cred_user and self._cred_user.expired and self._cred_user.refresh_token:
+                        self._cred_user.refresh(Request())
                     else:
                         cs_path = Path(client_secret_path)
                         if not cs_path.exists():
@@ -63,14 +75,11 @@ class GoogleServiceAccount:
 
                         flow = InstalledAppFlow.from_client_secrets_file(
                             str(cs_path), upload_scopes)
-                        cred_user = flow.run_local_server(port=0)
+                        self._cred_user = flow.run_local_server(port=0)
 
                     # 儲存 token 供下次使用
                     with open(token_path, 'w', encoding='utf-8') as token:
-                        token.write(cred_user.to_json())
-
-                self._upload_drive_service = build(
-                    "drive", "v3", credentials=cred_user)
+                        token.write(self._cred_user.to_json())
 
             self._token_path = token_path or ""
             self._client_secret_path = client_secret_path or ""
@@ -78,10 +87,7 @@ class GoogleServiceAccount:
             info(f"Google API 認證成功 (帳戶：{self._service_account_email})")
         except Exception as e:
             warning(f"Google API 認證失敗 (非阻擋性): {e}")
-            self._drive_service = None
-            self._sheets_service = None
             self._auth_success = False
-            self._upload_drive_service = None
 
     def refresh_or_reauth(self) -> bool:
         """
@@ -92,8 +98,7 @@ class GoogleServiceAccount:
         Returns:
             bool: 認證是否成功
         """
-        if not self._upload_drive_service or not self._upload_drive_service.valid:
-            # 嘗試從 token 檔案載入並刷新
+        if not self._cred_user or not self._cred_user.valid:
             t_path = Path(self._token_path)
             if t_path.exists():
                 cred_user = Credentials.from_authorized_user_file(
@@ -101,14 +106,14 @@ class GoogleServiceAccount:
                 if cred_user and cred_user.expired and cred_user.refresh_token:
                     try:
                         cred_user.refresh(Request())
-                        self._upload_drive_service = build(
-                            "drive", "v3", credentials=cred_user)
+                        self._cred_user = cred_user  # 更新記憶體中的憑證
+                        with open(self._token_path, 'w', encoding='utf-8') as token:
+                            token.write(self._cred_user.to_json())
                         info("Google API token 已自動更新")
                         return True
                     except Exception as e:
                         error(f"Token 刷新失敗：{e}")
 
-            # 沒有 refresh_token，需要重新授權
             return self._perform_oauth_flow()
 
         return True
@@ -123,27 +128,26 @@ class GoogleServiceAccount:
         upload_scopes = ["https://www.googleapis.com/auth/drive.file"]
         flow = InstalledAppFlow.from_client_secrets_file(
             str(cs_path), upload_scopes)
-        cred_user = flow.run_local_server(port=0)
+        self._cred_user = flow.run_local_server(port=0)
 
         with open(self._token_path, 'w', encoding='utf-8') as token:
-            token.write(cred_user.to_json())
+            token.write(self._cred_user.to_json())
 
-        self._upload_drive_service = build("drive", "v3", credentials=cred_user)
         self._auth_success = True
         info(f"Google API 重新認證成功 (帳戶：{self._service_account_email})")
         return True
 
     @property
     def drive_service(self):
-        return self._drive_service
+        return build("drive", "v3", credentials=self._cred_general)
 
     @property
     def sheets_service(self):
-        return self._sheets_service
+        return build("sheets", "v4", credentials=self._cred_general)
 
     @property
     def upload_drive_service(self):
-        return self._upload_drive_service
+        return build("drive", "v3", credentials=self._cred_user)
 
     @property
     def authenticated(self):

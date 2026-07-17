@@ -3,8 +3,8 @@ from pathlib import Path
 from typing import List, Dict, Optional, Callable, Awaitable
 from googleapiclient.http import MediaFileUpload
 from google.auth.exceptions import RefreshError
-from src.infrastructure.logger import info, error, warning, debug
-from src.infrastructure.google_workspace import GoogleServiceAccount
+from infrastructure.logger import info, error, warning, debug
+from infrastructure.google_workspace import GoogleServiceAccount, UnauthenticatedError, ConflictChoice
 
 
 class GoogleDriveService:
@@ -16,14 +16,25 @@ class GoogleDriveService:
         :param google_account_service: 已認證的 GoogleServiceAccount 實例
         """
         self._gs = google_account_service
-        self._service = google_account_service.drive_service
+
+    @property
+    def _service(self):
+        if not self._gs.authenticated:
+            raise UnauthenticatedError()
+        return self._gs.drive_service
+
+    @property
+    def _upload_service(self):
+        if not self._gs.authenticated:
+            raise UnauthenticatedError()
+        return self._gs.upload_drive_service
 
     async def find_folder_id(self, folder_name: str) -> Optional[str]:
         """
         搜尋指定名稱的資料夾 ID
         """
         if not self._gs.authenticated:
-            return None
+            raise UnauthenticatedError()
 
         def _sync_find():
             query = (
@@ -80,7 +91,7 @@ class GoogleDriveService:
         folder_id: str,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         conflict_solve_callback: Optional[Callable[[
-            str], Awaitable[bool]]] = None
+            str], Awaitable[ConflictChoice]]] = None
     ) -> List[Dict[str, str]]:
         """
         批量上傳檔案到指定資料夾
@@ -88,7 +99,7 @@ class GoogleDriveService:
         :param conflict_solve_callback: 衝突解決回呼，接收檔名並回傳是否覆蓋 (True: 覆蓋，False: 沿用現有 ID)
         :return: 包含成功上傳檔案 ID 的列表 [{"name": "...", "id": "..."}]
         """
-        if not self._gs.authenticated or not self._gs.upload_drive_service:
+        if not self._gs.authenticated or not self._upload_service:
             warning("Google API 未認證或上傳服務未就緒，無法上傳檔案")
             return []
 
@@ -115,33 +126,40 @@ class GoogleDriveService:
 
             # 1. 檢查檔案是否存在
             existing_id = await self.find_file_id(path_obj.name, folder_id)
-            should_update = False
+            conflict_choice = ConflictChoice.NEW_VERSION
 
             if existing_id:
                 if conflict_solve_callback:
                     # 呼叫 UI 回呼詢問使用者
-                    should_update = await conflict_solve_callback(path_obj.name)
+                    conflict_choice = await conflict_solve_callback(path_obj.name)
 
-                if not should_update:
+                if conflict_choice is ConflictChoice.SKIP:
                     info(
                         f"檔案 '{path_obj.name}' 已存在且使用者選擇不覆蓋，沿用現有 ID: {existing_id}")
                     return {'id': existing_id, 'name': path_obj.name}
 
             def _sync_perform():
                 media = MediaFileUpload(str(path_obj), resumable=True)
-                if should_update and existing_id:
+                if conflict_choice == ConflictChoice.SKIP:
+                    return {'id': existing_id, 'name': path_obj.name}
+                if conflict_choice == ConflictChoice.OVERWRITE and existing_id:
                     # 執行更新 (Overwrite)
-                    return self._gs.upload_drive_service.files().update(
-                        fileId=existing_id,
-                        media_body=media,
-                        fields='id, name',
-                        supportsAllDrives=True
-                    ).execute()
+                    try:
+                        return self._upload_service.files().update(
+                            fileId=existing_id,
+                            media_body=media,
+                            fields='id, name',
+                            supportsAllDrives=True
+                        ).execute()
+                    except Exception as e:
+                        error(f"更新檔案 '{path_obj.name}' 失敗: {e}", exc_info=True)
+                        warning(f"更新失敗，存在相同檔名，沿用現有 ID: {existing_id}")
+                        return {'id': existing_id, 'name': path_obj.name}
                 else:
                     # 執行建立 (New Upload)
                     file_metadata = {'name': path_obj.name,
                                      'parents': [folder_id]}
-                    return self._gs.upload_drive_service.files().create(
+                    return self._upload_service.files().create(
                         body=file_metadata,
                         media_body=media,
                         fields='id, name',
@@ -149,7 +167,7 @@ class GoogleDriveService:
                     ).execute()
 
             try:
-                action_str = "更新" if should_update else "上傳"
+                action_str = str(conflict_choice.value)
                 info(f"開始{action_str}檔案: {path_obj.name}")
                 result = await asyncio.to_thread(_sync_perform)
                 info(f"{action_str}成功: {path_obj.name} (ID: {result.get('id')})")
