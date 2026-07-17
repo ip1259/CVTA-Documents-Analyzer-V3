@@ -1,30 +1,30 @@
 import sys
 import os
 import asyncio
-from src.infrastructure.logger import info, warning, error, catch_exception
-from src.infrastructure.ollama_client import OllamaClient
-from src.infrastructure.local_storage import LocalStorage
-from src.domain.validator import OcrDataValidator
-from config.settings import OLLAMA_MODEL
+from infrastructure.logger import info, warning, error, catch_exception
+from infrastructure.ollama_client import OllamaClient
+from infrastructure.local_storage import LocalStorage
+from domain.validator import OcrDataValidator
+from config.settings import OLLAMA_MODEL, PROMPTS_PATH
 import json
 
 
 class DocumentProcessor:
     """公文處理協調器 - 整合完整流程"""
 
-    def __init__(self, prompts_path: str):
-        self._prompts = self._load_prompts(prompts_path)
+    def __init__(self):
+        self._system_prompt = self._load_system_prompt()
         self._ollama = OllamaClient(
             model=OLLAMA_MODEL,
-            system_prompt=self._prompts
+            system_prompt=self._system_prompt
         )
         self._validator = OcrDataValidator()
         self._storage = LocalStorage()
 
-    def _load_prompts(self, prompts_path: str) -> str:
+    def _load_system_prompt(self) -> str:
         """載入 prompts.json 設定"""
         try:
-            with open(prompts_path, 'r', encoding='utf-8') as f:
+            with open(PROMPTS_PATH, 'r', encoding='utf-8') as f:
                 sys_prompt = json.load(f)
                 sys_prompt = json.dumps(sys_prompt,
                                         indent=2, ensure_ascii=False)
@@ -79,7 +79,7 @@ class DocumentProcessor:
                 "error": str(e)
             }
 
-    async def process_batch(self, image_paths: list) -> dict:
+    async def process_batch(self, image_paths: list, extra_output: bool = False) -> dict:
         """批次處理多張圖片"""
         info(f"批次處理 {len(image_paths)} 張圖片")
 
@@ -112,7 +112,8 @@ class DocumentProcessor:
         batch_count = self._storage.append_batch(prepared_data)
 
         # 額外產出用於複製的 CSV 檔案 (Overwrite 模式)
-        self._storage.save_for_copying(prepared_data)
+        if extra_output:
+            self._storage.save_for_copying(prepared_data)
 
         info(f"批次處理完成：{batch_count}/{len(image_paths)}")
 
@@ -131,7 +132,10 @@ async def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="CVTA 公文 OCR 分析器")
-    parser.add_argument("--images", nargs="*", help="圖片路徑列表")
+    parser.add_argument("--images", nargs="*", type=str, required=True,
+                        help="圖片路徑列表")
+    parser.add_argument("--extra_output", action="store_true",
+                        help="額外產出用於複製的 CSV 檔案")
     args = parser.parse_args()
 
     if not args.images:
@@ -139,12 +143,10 @@ async def main():
         sys.exit(1)
 
     # 建立處理協調器
-    processor = DocumentProcessor(
-        "E:\\ProgramData\\Repo\\公文系統\\V3\\CVTA-Documents-Analyzer-V3\\config\\prompts.json"
-    )
+    processor = DocumentProcessor()
 
     # 執行批次處理
-    result = await processor.process_batch(args.images)
+    result = await processor.process_batch(args.images, args.extra_output)
 
     # 輸出結果
     print("\n=== 處理結果 ===")
