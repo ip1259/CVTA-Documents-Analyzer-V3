@@ -4,6 +4,7 @@
 import os
 import configparser
 from pathlib import Path
+from typing import Union, Optional
 
 # 定義目錄結構
 CONFIG_DIR = Path(__file__).parent.resolve()
@@ -11,7 +12,7 @@ BASE_DIR = CONFIG_DIR.parent
 
 # --- 1. 定義系統預設值 (程式碼內的基準設定) ---
 # Ollama 多模態模型設定
-OLLAMA_HOST = "http://IP:11434"
+OLLAMA_HOST = "http://HOST:PORT"
 OLLAMA_MODEL = "qwen3.5:9b"
 # 系統參數
 SYSTEM_NAME = "公文 OCR 自動化歸納系統"
@@ -32,7 +33,13 @@ OUTPUT_DIR = "output_results"
 GOOGLE_KEY_PATH = CONFIG_DIR / "google_key.json"
 GOOGLE_CLIENT_SECRET_PATH = CONFIG_DIR / "client_secret.json"
 GOOGLE_TOKEN_PATH = CONFIG_DIR / "token.json"
-GOOGLE_SPREADSHEET_ID = None
+
+
+# 運作參數
+GOOGLE_SPREADSHEET_ID: Optional[str] = None
+SHEET_NAME: Optional[str] = None
+TARGET_FOLDER_NAME: Optional[str] = None
+PROMPTS_PATH: Union[str, Path] = CONFIG_DIR / "prompts.json"
 
 
 # --- 2. 自動建立預設 config 檔 (若不存在任何 .cfg) ---
@@ -49,7 +56,8 @@ def _ensure_default_config():
     required_structure = {
         'Ollama': {
             'OLLAMA_HOST': OLLAMA_HOST,
-            'OLLAMA_MODEL': OLLAMA_MODEL
+            'OLLAMA_MODEL': OLLAMA_MODEL,
+            'PROMPTS_PATH': str(PROMPTS_PATH)
         },
         'System': {
             'SYSTEM_NAME': SYSTEM_NAME,
@@ -67,7 +75,11 @@ def _ensure_default_config():
             'INPUT_DIR': INPUT_DIR,
             'OUTPUT_DIR': OUTPUT_DIR
         },
-        'Google': {'GOOGLE_SPREADSHEET_ID': ''}
+        'Google': {
+            'GOOGLE_SPREADSHEET_ID': '',
+            'SHEET_NAME': '',
+            'TARGET_FOLDER_NAME': ''
+        }
     }
 
     modified = False
