@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, date
 
-from src.infrastructure.logger import info, warning, error
+from infrastructure.logger import info, warning, error
 
 # from src.infrastructure.ollama_client import OllamaClient
 

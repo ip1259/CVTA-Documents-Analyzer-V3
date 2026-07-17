@@ -3,7 +3,7 @@ import base64
 from pathlib import Path
 from config import settings
 from ollama import AsyncClient
-from src.infrastructure.logger import error, debug, info, warning
+from infrastructure.logger import error, debug, info, warning
 
 
 # Ollama API 設定（從 config/settings.py 讀取）

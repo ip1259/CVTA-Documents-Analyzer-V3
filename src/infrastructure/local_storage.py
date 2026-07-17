@@ -1,5 +1,5 @@
 import asyncio
-from src.infrastructure.logger import info, warning
+from infrastructure.logger import info, warning
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -17,7 +17,7 @@ class LocalStorage:
         try:
             sys.path.insert(0, os.path.dirname(
                 os.path.dirname(os.path.dirname(__file__))))
-            from config.settings import DATA_DIR, INPUT_DIR, OUTPUT_DIR
+            from src.config.settings import DATA_DIR, INPUT_DIR, OUTPUT_DIR
 
             base_path = Path(__file__).parent.parent.parent
             self._output_dir = base_path / DATA_DIR / OUTPUT_DIR
