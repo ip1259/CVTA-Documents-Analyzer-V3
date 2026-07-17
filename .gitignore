@@ -12,3 +12,6 @@ src/config/settings.cfg
 src/config/client_secret.json
 src/config/token.json
 src/config/google_key.json
+antigravity.config.json
+google_spreadsheet_append.txt
+thread_safety.log
