@@ -428,11 +428,11 @@ Rectangle {
                                     onFocusChanged: () => {
                                                         if (textClass.focus) {
                                                             animWidth.to
-                                                            = pinchArea.baseSizeWidth * 1.0
+                                                            = pinchArea.baseSizeWidth * 1.35
                                                             animHeight.to
-                                                            = pinchArea.baseSizeHeight * 1.0
-                                                            propertyAnimation.to = 0
-                                                            propertyAnimation1.to = 200
+                                                            = pinchArea.baseSizeHeight * 1.35
+                                                            propertyAnimation.to = 90
+                                                            propertyAnimation1.to = 100
                                                             animWidth.start()
                                                             animHeight.start()
                                                             propertyAnimation.start()
@@ -455,11 +455,11 @@ Rectangle {
                                     onFocusChanged: () => {
                                                         if (textKeyPoint.focus) {
                                                             animWidth.to
-                                                            = pinchArea.baseSizeWidth * 1.0
+                                                            = pinchArea.baseSizeWidth * 1.35
                                                             animHeight.to
-                                                            = pinchArea.baseSizeHeight * 1.0
-                                                            propertyAnimation.to = 0
-                                                            propertyAnimation1.to = 200
+                                                            = pinchArea.baseSizeHeight * 1.35
+                                                            propertyAnimation.to = 90
+                                                            propertyAnimation1.to = 100
                                                             animWidth.start()
                                                             animHeight.start()
                                                             propertyAnimation.start()
