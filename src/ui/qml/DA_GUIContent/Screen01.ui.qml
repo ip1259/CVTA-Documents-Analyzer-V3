@@ -428,9 +428,9 @@ Rectangle {
                                     onFocusChanged: () => {
                                                         if (textClass.focus) {
                                                             animWidth.to
-                                                            = pinchArea.baseSizeWidth * 1.5
+                                                            = pinchArea.baseSizeWidth * 1.0
                                                             animHeight.to
-                                                            = pinchArea.baseSizeHeight * 1.5
+                                                            = pinchArea.baseSizeHeight * 1.0
                                                             propertyAnimation.to = 0
                                                             propertyAnimation1.to = 200
                                                             animWidth.start()
@@ -455,9 +455,9 @@ Rectangle {
                                     onFocusChanged: () => {
                                                         if (textKeyPoint.focus) {
                                                             animWidth.to
-                                                            = pinchArea.baseSizeWidth * 1.5
+                                                            = pinchArea.baseSizeWidth * 1.0
                                                             animHeight.to
-                                                            = pinchArea.baseSizeHeight * 1.5
+                                                            = pinchArea.baseSizeHeight * 1.0
                                                             propertyAnimation.to = 0
                                                             propertyAnimation1.to = 200
                                                             animWidth.start()
