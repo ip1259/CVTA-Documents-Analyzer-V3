@@ -14,14 +14,14 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import re
 
-from infrastructure.logger import info, warning, error
-from infrastructure.document import Document
-from infrastructure.google_workspace.sheets_service import GoogleSheetsService
-from infrastructure.google_workspace.drive_service import GoogleDriveService
-from infrastructure.google_workspace import GoogleServiceAccount, ConflictChoice
-from domain.orchestrator import DocumentProcessor
+from src.infrastructure.logger import info, warning, error
+from src.infrastructure.document import Document
+from src.infrastructure.google_workspace.sheets_service import GoogleSheetsService
+from src.infrastructure.google_workspace.drive_service import GoogleDriveService
+from src.infrastructure.google_workspace import GoogleServiceAccount, ConflictChoice
+from src.domain.orchestrator import DocumentProcessor
 
-from config.settings import TARGET_FOLDER_NAME
+from src.config.settings import TARGET_FOLDER_NAME
 
 
 class StorageError(Exception):
@@ -36,35 +36,20 @@ class StorageBackend:
     採用單例模式（Singleton），確保全域僅有一個資料源。
     """
 
-    _instance = None
-    _instance_lock = threading.Lock()
-
     def __new__(cls, *args, **kwargs):
         """確保全域只有一個 StorageBackend 實例（執行緒安全）。"""
-        if cls._instance is None:
-            with cls._instance_lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
-        return cls._instance
+        return super().__new__(cls)
 
     def __init__(self, json_path: str = "data/output_results/documents.json"):
         """初始化單例儲存後端。"""
-        if getattr(self, "_initialized", False):
-            return
-
         self._json_path = Path(json_path)
 
-        # 初始化目錄
         self._json_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 執行緒安全設計
         self._lock = threading.RLock()
 
-        # key為圖片來源（image_source），value為Document物件
         self._data: Dict[str, Document] = {}
 
-        self._initialized = True
 
     def _get_storage(self, dict_mode: bool = False) -> Dict[str, Document | dict]:
         """獲取當前資料字典（已移除 thread_local 邏輯）。"""
@@ -105,7 +90,6 @@ class StorageBackend:
             if img_src not in storage:
                 raise StorageError(f"找不到要更新的公文：{img_src}")
 
-            # 確保識別碼一致性
             if updated_doc.image_source and updated_doc.image_source != img_src:
                 raise StorageError("不可變更公文的圖片來源（image_source）")
 
@@ -140,9 +124,6 @@ class StorageBackend:
             self._get_storage().clear()
             info("已清空記憶體中的公文資料")
 
-    # ==========================================
-    # 持久化與外部同步（JSON / Google Sheets）
-    # ==========================================
     def save_to_json(self) -> None:
         """將當前資料持久化儲存至 JSON。"""
         with self._lock:
@@ -207,7 +188,6 @@ class StorageBackend:
         Returns:
             dict: 包含 success_count, failed_count 與 total_count 的處理結果字典
         """
-        # 1. 取得所有需要分析的公文
         with self._lock:
             all_docs = self.get_all_documents()
 
@@ -216,29 +196,33 @@ class StorageBackend:
             info("無任何公文需要進行分析。")
             yield 100, "無任何公文需要進行分析"
             yield "RESULT", {"total": 0, "success": 0, "failed": 0}
+            return
 
         success_count = 0
         failed_count = 0
 
+        yield 0, "正在確認 AI 服務可用性..."
+        service_status = await processor.check_ai_service()
+        if not service_status["available"]:
+            raise RuntimeError(
+                f"AI 服務確認失敗 [{service_status['error_code']}]："
+                f"{service_status['message']}"
+            )
+
         info(f"開始批次分析流程，共 {total_docs} 筆公文。")
 
         for idx, doc in enumerate(all_docs, start=1):
-            # 計算當前進度百分比（預留分析完成後的更新步驟）
             progress_percent = int(((idx - 1) / total_docs) * 100)
 
-            # 取得檔案名稱作為進度描述
             file_name = Path(
                 doc.image_source).name if doc.image_source else "未知檔案"
             yield progress_percent, f"正在分析第 {idx}/{total_docs} 筆：{file_name}..."
 
             try:
-                # 2. 呼叫協調器進行 OCR 與驗證
-                # (因為 process_single 是 async，我們需要 await 它)
                 process_result = await processor.process_single(doc.image_source)
 
                 with self._lock:
                     if process_result.get("success"):
-                        # 3. 驗證通過：更新記憶體中 Document 的欄位
                         csv_data = process_result.get("result", {})
 
                         doc.doc_date = csv_data.get("doc_date", doc.doc_date)
@@ -258,7 +242,6 @@ class StorageBackend:
                         success_count += 1
                         info(f"公文 [{file_name}] 分析暨驗證成功。")
                     else:
-                        # 4. 驗證失敗：記錄錯誤，標記為未分析完成
                         doc.analyzed = False
                         failed_count += 1
                         error_msg = process_result.get("error", "未知錯誤")
@@ -268,17 +251,14 @@ class StorageBackend:
                 failed_count += 1
                 error(f"分析公文 [{file_name}] 時發生非預期異常：{e}", exc_info=True)
 
-        # 5. 分析結束，將結果寫回本地 JSON 存檔以確保持久化
         try:
             yield 95, "正在將分析結果持久化至本地 JSON..."
             self.save_to_json()
         except Exception as e:
             error(f"分析後自動存檔失敗：{e}")
 
-        # 6. 回報 100% 完成
         yield 100, f"分析完成！成功: {success_count} 筆, 失敗: {failed_count} 筆"
 
-        # 7. 回傳最終處理統計
         yield "RESULT", {
             "total": total_docs,
             "success": success_count,
@@ -288,24 +268,53 @@ class StorageBackend:
     def upload_to_google_drive(self, google_account_service: GoogleServiceAccount,
                                progress_callback: Optional[Callable[[
                                    int, str], None]] = None,
-                               conflict_callback: Optional[Callable[[str], bool]] = None):
+                               conflict_callback: Optional[Callable[[str], ConflictChoice]] = None,
+                               cancellation_event: threading.Event | None = None) -> dict:
         """將所有公文上傳至 Google Drive（支援圖片），並更新公文的雲端檔案 ID。"""
 
         try:
-            # 1. 收集篩選需要上傳的公文及其圖片路徑
             with self._lock:
                 docs_to_upload = []
                 upload_target_imgs = []
+                missing_images = []
                 for doc in self.get_all_documents():
-                    if not doc.drive_file_id and doc.image_source and Path(doc.image_source).exists():
+                    if doc.drive_file_id:
+                        continue
+                    if doc.image_source and Path(doc.image_source).exists():
                         docs_to_upload.append(doc)
                         upload_target_imgs.append(doc.image_source)
+                    else:
+                        missing_images.append(doc.image_source)
+
+            if missing_images:
+                return {
+                    "success": False,
+                    "cancelled": False,
+                    "uploaded": 0,
+                    "failed": len(missing_images),
+                    "results": [
+                        {
+                            "name": Path(path).name if path else "",
+                            "success": False,
+                            "file_id": "",
+                            "action": "create",
+                            "error_code": "file_not_found",
+                            "message": f"找不到圖片：{path}",
+                        }
+                        for path in missing_images
+                    ],
+                }
 
             if not upload_target_imgs:
                 info("沒有需要上傳的公文圖片")
-                return
+                return {
+                    "success": True,
+                    "cancelled": False,
+                    "uploaded": 0,
+                    "failed": 0,
+                    "results": []
+                }
 
-            # 2. 定義非同步執行流程
             async def _async_upload_flow():
                 drive_service = GoogleDriveService(google_account_service)
                 if not TARGET_FOLDER_NAME:
@@ -329,23 +338,24 @@ class StorageBackend:
                     file_paths=upload_target_imgs,
                     folder_id=folder_id,
                     progress_callback=inner_progress,
-                    conflict_solve_callback=inner_conflict
+                    conflict_solve_callback=inner_conflict,
+                    cancellation_event=cancellation_event
                 )
 
-            # 3. 執行非同步事件迴圈
             try:
                 loop = asyncio.get_event_loop()
             except RuntimeError:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
 
-            uploaded_results = loop.run_until_complete(_async_upload_flow())
+            upload_results = loop.run_until_complete(_async_upload_flow())
 
-            # 4. 回寫雲端硬碟檔案 ID
             with self._lock:
-                assert True
-                id_map = {res['name']: res['id']
-                          for res in uploaded_results if 'name' in res and 'id' in res}
+                id_map = {
+                    result["name"]: result["file_id"]
+                    for result in upload_results
+                    if result["success"] and result["file_id"]
+                }
 
                 updated_count = 0
                 for doc in docs_to_upload:
@@ -360,12 +370,30 @@ class StorageBackend:
             error(f"Google Drive 上傳失敗：{e}", exc_info=True)
             raise StorageError(str(e))
 
+        self.save_to_json()
+        failed_count = sum(
+            1 for result in upload_results
+            if not result["success"] and result["action"] != "cancelled"
+        )
+        cancelled = any(
+            result["action"] == "cancelled" for result in upload_results
+        )
+        return {
+            "success": failed_count == 0 and not cancelled,
+            "cancelled": cancelled,
+            "uploaded": sum(
+                1 for result in upload_results if result["success"]
+            ),
+            "failed": failed_count,
+            "results": upload_results,
+        }
+
     def sync_to_google_sheets(self, google_account_service: GoogleServiceAccount) -> None:
         """將資料同步至 Google Sheets。"""
         try:
             sheets_service = GoogleSheetsService(google_account_service)
             with self._lock:
-                rows = {}  # {sheet_name: [row1, row2, ...]}
+                rows = {}
                 for doc in self.get_all_documents():
                     sheet_name = Path(doc.image_source).name[:3] + "年度"
                     if sheet_name not in rows:
@@ -379,11 +407,9 @@ class StorageBackend:
                 return
 
             for sheet_name, row_data in rows.items():
-                # 先確認"範本"是否存在
                 template_sheet_id = sheets_service.get_sheet_id_by_name("範本")
                 if template_sheet_id is None:
                     raise StorageError("找不到 '範本' 工作表")
-                # 先確認sheet是否存在雲端上, 不在的話從"範本"複製一個Sheet出來
                 sheet_id = sheets_service.get_sheet_id_by_name(sheet_name)
                 if sheet_id is None:
                     sheets_service.duplicate_sheet("範本", sheet_name)

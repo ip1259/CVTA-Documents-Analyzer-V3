@@ -78,7 +78,6 @@ class Document:
     @classmethod
     def from_dict(cls, data: dict) -> "Document":
         """從字典建立公文物件。"""
-        # 確保有 image_source，否則無法作為唯一識別碼
         if not data.get("image_source"):
             raise ValueError("[ERROR] 建立公文物件失敗，image_source 欄位為空值")
 
@@ -97,5 +96,4 @@ class Document:
         )
 
 
-# 匯出名稱
 __all__ = ["Document"]
