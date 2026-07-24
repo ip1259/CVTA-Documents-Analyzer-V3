@@ -5,8 +5,8 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from infrastructure.logger import info, warning, error
-from config.settings import GOOGLE_KEY_PATH, GOOGLE_CLIENT_SECRET_PATH, GOOGLE_TOKEN_PATH
+from src.infrastructure.logger import info, warning, error
+from src.config.settings import GOOGLE_KEY_PATH, GOOGLE_CLIENT_SECRET_PATH, GOOGLE_TOKEN_PATH
 
 
 class ConflictChoice(Enum):
@@ -33,12 +33,17 @@ class GoogleServiceAccount:
         token_path: str = GOOGLE_TOKEN_PATH,
         project_id: str = None
     ):
+        self._cred_general = None
+        self._cred_user = None
+        self._project_id = project_id
+        self._service_account_email = ""
+        self._token_path = str(token_path or "")
+        self._client_secret_path = str(client_secret_path or "")
+        self._auth_success = False
         try:
             if not Path(service_account_path).exists():
                 raise FileNotFoundError(f"找不到服務帳戶檔案：{service_account_path}")
 
-            # 1. 建立用於一般操作 (Drive, Sheets) 的憑證
-            # 包含廣泛的 Drive 權限，足以進行檔案的讀寫、管理等操作
             general_scopes = [
                 "https://www.googleapis.com/auth/drive",
                 "https://www.googleapis.com/auth/spreadsheets"
@@ -47,23 +52,18 @@ class GoogleServiceAccount:
                 service_account_path,
                 scopes=general_scopes
             )
-            self._cred_user = None
             self._project_id = project_id or self._cred_general.project_id
             self._service_account_email = self._cred_general.service_account_email
 
-            # 2. 建立用於檔案上傳的專用憑證 (使用 OAuth 2.0 User Flow)
-            # 使用 User OAuth 2.0 可以解決服務帳戶 (Service Account) 沒有儲存空間配額的問題。
             if client_secret_path and token_path:
                 upload_scopes = ["https://www.googleapis.com/auth/drive.file"]
                 self._cred_user = None
 
-                # 嘗試載入現有的 token
                 t_path = Path(token_path)
                 if t_path.exists():
                     self._cred_user = Credentials.from_authorized_user_file(
                         str(t_path), upload_scopes)
 
-                # 如果 token 無效或不存在，則執行 OAuth2 授權流程
                 if not self._cred_user or self._cred_user.expired:
                     if self._cred_user and self._cred_user.expired and self._cred_user.refresh_token:
                         self._cred_user.refresh(Request())
@@ -77,12 +77,9 @@ class GoogleServiceAccount:
                             str(cs_path), upload_scopes)
                         self._cred_user = flow.run_local_server(port=0)
 
-                    # 儲存 token 供下次使用
                     with open(token_path, 'w', encoding='utf-8') as token:
                         token.write(self._cred_user.to_json())
 
-            self._token_path = token_path or ""
-            self._client_secret_path = client_secret_path or ""
             self._auth_success = True
             info(f"Google API 認證成功 (帳戶：{self._service_account_email})")
         except Exception as e:
@@ -106,7 +103,7 @@ class GoogleServiceAccount:
                 if cred_user and cred_user.expired and cred_user.refresh_token:
                     try:
                         cred_user.refresh(Request())
-                        self._cred_user = cred_user  # 更新記憶體中的憑證
+                        self._cred_user = cred_user
                         with open(self._token_path, 'w', encoding='utf-8') as token:
                             token.write(self._cred_user.to_json())
                         info("Google API token 已自動更新")
@@ -139,14 +136,20 @@ class GoogleServiceAccount:
 
     @property
     def drive_service(self):
+        if not self._auth_success or self._cred_general is None:
+            raise UnauthenticatedError()
         return build("drive", "v3", credentials=self._cred_general)
 
     @property
     def sheets_service(self):
+        if not self._auth_success or self._cred_general is None:
+            raise UnauthenticatedError()
         return build("sheets", "v4", credentials=self._cred_general)
 
     @property
     def upload_drive_service(self):
+        if not self._auth_success or self._cred_user is None:
+            raise UnauthenticatedError()
         return build("drive", "v3", credentials=self._cred_user)
 
     @property

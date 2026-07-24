@@ -1,20 +1,22 @@
 import asyncio
+import threading
 from pathlib import Path
-from typing import List, Dict, Optional, Callable, Awaitable
+from typing import Awaitable, Callable, Optional
+
 from googleapiclient.http import MediaFileUpload
-from google.auth.exceptions import RefreshError
-from infrastructure.logger import info, error, warning, debug
-from infrastructure.google_workspace import GoogleServiceAccount, UnauthenticatedError, ConflictChoice
+
+from src.infrastructure.google_workspace import (
+    ConflictChoice,
+    GoogleServiceAccount,
+    UnauthenticatedError,
+)
+from src.infrastructure.logger import error, info, warning
 
 
 class GoogleDriveService:
-    """Google Drive 檔案操作服務 (支援非同步非阻塞呼叫)"""
+    """Google Drive file operations."""
 
     def __init__(self, google_account_service: GoogleServiceAccount):
-        """
-        初始化 Drive 服務
-        :param google_account_service: 已認證的 GoogleServiceAccount 實例
-        """
         self._gs = google_account_service
 
     @property
@@ -30,194 +32,187 @@ class GoogleDriveService:
         return self._gs.upload_drive_service
 
     async def find_folder_id(self, folder_name: str) -> Optional[str]:
-        """
-        搜尋指定名稱的資料夾 ID
-        """
         if not self._gs.authenticated:
             raise UnauthenticatedError()
 
-        def _sync_find():
+        def find():
             query = (
                 f"name = '{folder_name}' and "
-                f"mimeType = 'application/vnd.google-apps.folder' and "
-                f"trashed = false"
+                "mimeType = 'application/vnd.google-apps.folder' and "
+                "trashed = false"
             )
             response = self._service.files().list(
                 q=query,
-                spaces='drive',
-                fields='files(id, name)',
+                spaces="drive",
+                fields="files(id, name)",
                 supportsAllDrives=True,
-                includeItemsFromAllDrives=True
+                includeItemsFromAllDrives=True,
             ).execute()
-            files = response.get('files', [])
-            return files[0]['id'] if files else None
+            files = response.get("files", [])
+            return files[0]["id"] if files else None
 
-        try:
-            info(f"正在搜尋資料夾：{folder_name}")
-            return await asyncio.to_thread(_sync_find)
-        except Exception as e:
-            error(f"搜尋資料夾 '{folder_name}' 失敗: {e}", exc_info=True)
-            return None
+        return await asyncio.to_thread(find)
 
-    async def find_file_id(self, file_name: str, folder_id: str) -> Optional[str]:
-        """
-        搜尋指定資料夾下的特定檔案 ID
-        """
+    async def find_file_id(
+        self,
+        file_name: str,
+        folder_id: str
+    ) -> Optional[str]:
         if not self._gs.authenticated:
-            return None
+            raise UnauthenticatedError()
 
-        def _sync_find():
-            query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
+        def find():
+            query = (
+                f"name = '{file_name}' and "
+                f"'{folder_id}' in parents and trashed = false"
+            )
             response = self._service.files().list(
                 q=query,
-                spaces='drive',
-                fields='files(id, name)',
+                spaces="drive",
+                fields="files(id, name)",
                 supportsAllDrives=True,
-                includeItemsFromAllDrives=True
+                includeItemsFromAllDrives=True,
             ).execute()
-            files = response.get('files', [])
-            return files[0]['id'] if files else None
+            files = response.get("files", [])
+            return files[0]["id"] if files else None
 
-        try:
-            debug(f"正在資料夾 {folder_id} 中搜尋檔案：{file_name}")
-            return await asyncio.to_thread(_sync_find)
-        except Exception as e:
-            error(f"搜尋檔案 '{file_name}' 失敗: {e}")
-            return None
+        return await asyncio.to_thread(find)
 
     async def upload_files(
         self,
-        file_paths: List[str],
+        file_paths: list[str],
         folder_id: str,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None,
-        conflict_solve_callback: Optional[Callable[[
-            str], Awaitable[ConflictChoice]]] = None
-    ) -> List[Dict[str, str]]:
-        """
-        批量上傳檔案到指定資料夾
-        :param progress_callback: 進度回呼函式，接收 (已完成數，總總數，當前檔名)
-        :param conflict_solve_callback: 衝突解決回呼，接收檔名並回傳是否覆蓋 (True: 覆蓋，False: 沿用現有 ID)
-        :return: 包含成功上傳檔案 ID 的列表 [{"name": "...", "id": "..."}]
-        """
-        if not self._gs.authenticated or not self._upload_service:
-            warning("Google API 未認證或上傳服務未就緒，無法上傳檔案")
-            return []
+        progress_callback: Optional[
+            Callable[[int, int, str], None]
+        ] = None,
+        conflict_solve_callback: Optional[
+            Callable[[str], Awaitable[ConflictChoice]]
+        ] = None,
+        cancellation_event: threading.Event | None = None,
+    ) -> list[dict]:
+        if not self._gs.authenticated:
+            raise UnauthenticatedError()
 
-        async def _retry_on_401(operation):
-            """
-            當遇到 401 錯誤時，嘗試重新認證後重試操作。
-            若重新認證失敗，則拋出原始錯誤。
-            """
-            try:
-                return await operation()
-            except RefreshError:
-                error("Google API Token 過期，正在重新認證...")
-                if self._gs.refresh_or_reauth():
-                    info("Token 已更新，重試上傳...")
-                    return await operation()
-                else:
-                    raise
+        results: list[dict] = []
+        total = len(file_paths)
+        for index, file_path in enumerate(file_paths):
+            if cancellation_event and cancellation_event.is_set():
+                for cancelled_path in file_paths[index:]:
+                    results.append(self._result(
+                        Path(cancelled_path).name,
+                        success=False,
+                        action="cancelled",
+                        error_code="cancelled",
+                        message="使用者取消上傳",
+                    ))
+                break
 
-        async def _upload_single(file_path: str):
-            path_obj = Path(file_path)
-            if not path_obj.exists():
-                warning(f"檔案不存在，跳過上傳: {file_path}")
-                return None
+            result = await self._upload_single(
+                file_path,
+                folder_id,
+                conflict_solve_callback,
+            )
+            results.append(result)
+            if progress_callback:
+                progress_callback(index + 1, total, Path(file_path).name)
 
-            # 1. 檢查檔案是否存在
-            existing_id = await self.find_file_id(path_obj.name, folder_id)
-            conflict_choice = ConflictChoice.NEW_VERSION
+        succeeded = sum(1 for result in results if result["success"])
+        info(f"Drive 上傳完成：{succeeded}/{total}")
+        return results
 
-            if existing_id:
-                if conflict_solve_callback:
-                    # 呼叫 UI 回呼詢問使用者
-                    conflict_choice = await conflict_solve_callback(path_obj.name)
+    async def _upload_single(
+        self,
+        file_path: str,
+        folder_id: str,
+        conflict_solve_callback: Optional[
+            Callable[[str], Awaitable[ConflictChoice]]
+        ],
+    ) -> dict:
+        path = Path(file_path)
+        if not path.exists():
+            return self._result(
+                path.name,
+                success=False,
+                action="create",
+                error_code="file_not_found",
+                message=f"找不到檔案：{file_path}",
+            )
 
-                if conflict_choice is ConflictChoice.SKIP:
-                    info(
-                        f"檔案 '{path_obj.name}' 已存在且使用者選擇不覆蓋，沿用現有 ID: {existing_id}")
-                    return {'id': existing_id, 'name': path_obj.name}
+        media = None
+        try:
+            existing_id = await self.find_file_id(path.name, folder_id)
+            choice = ConflictChoice.NEW_VERSION
+            if existing_id and conflict_solve_callback:
+                choice = await conflict_solve_callback(path.name)
 
-            def _sync_perform():
-                media = MediaFileUpload(str(path_obj), resumable=True)
-                if conflict_choice == ConflictChoice.SKIP:
-                    return {'id': existing_id, 'name': path_obj.name}
-                if conflict_choice == ConflictChoice.OVERWRITE and existing_id:
-                    # 執行更新 (Overwrite)
-                    try:
-                        return self._upload_service.files().update(
-                            fileId=existing_id,
-                            media_body=media,
-                            fields='id, name',
-                            supportsAllDrives=True
-                        ).execute()
-                    except Exception as e:
-                        error(f"更新檔案 '{path_obj.name}' 失敗: {e}", exc_info=True)
-                        warning(f"更新失敗，存在相同檔名，沿用現有 ID: {existing_id}")
-                        return {'id': existing_id, 'name': path_obj.name}
-                else:
-                    # 執行建立 (New Upload)
-                    file_metadata = {'name': path_obj.name,
-                                     'parents': [folder_id]}
-                    return self._upload_service.files().create(
-                        body=file_metadata,
+            if existing_id and choice is ConflictChoice.SKIP:
+                return self._result(
+                    path.name,
+                    success=True,
+                    file_id=existing_id,
+                    action="skip",
+                    message="沿用既有檔案",
+                )
+
+            media = MediaFileUpload(str(path), resumable=True)
+            if existing_id and choice is ConflictChoice.OVERWRITE:
+                action = "overwrite"
+
+                def upload():
+                    return self._upload_service.files().update(
+                        fileId=existing_id,
                         media_body=media,
-                        fields='id, name',
-                        supportsAllDrives=True
+                        fields="id, name",
+                        supportsAllDrives=True,
+                    ).execute()
+            else:
+                action = "create"
+
+                def upload():
+                    return self._upload_service.files().create(
+                        body={"name": path.name, "parents": [folder_id]},
+                        media_body=media,
+                        fields="id, name",
+                        supportsAllDrives=True,
                     ).execute()
 
-            try:
-                action_str = str(conflict_choice.value)
-                info(f"開始{action_str}檔案: {path_obj.name}")
-                result = await asyncio.to_thread(_sync_perform)
-                info(f"{action_str}成功: {path_obj.name} (ID: {result.get('id')})")
-                return result
-            except RefreshError as e:
-                raise e
-            except Exception as e:
-                error(f"{action_str}檔案 {path_obj.name} 失敗：{e}")
-                return None
+            response = await asyncio.to_thread(upload)
+            return self._result(
+                path.name,
+                success=True,
+                file_id=response.get("id", ""),
+                action=action,
+            )
+        except Exception as exc:
+            error(f"Drive {path.name} 上傳失敗：{exc}", exc_info=True)
+            return self._result(
+                path.name,
+                success=False,
+                file_id=existing_id if "existing_id" in locals() else "",
+                action=action if "action" in locals() else "create",
+                error_code="upload_failed",
+                message=str(exc),
+            )
+        finally:
+            file_handle = getattr(media, "_fd", None)
+            if file_handle is not None and not file_handle.closed:
+                file_handle.close()
 
-        completed_count = 0
-        total_count = len(file_paths)
-
-        async def _upload_and_report(file_path: str):
-            """包裝單一上傳任務以觸發進度回報"""
-            nonlocal completed_count
-            result = await _upload_single(file_path)
-            completed_count += 1
-            if progress_callback:
-                try:
-                    # 觸發回呼，供 GUI 更新進度條
-                    progress_callback(
-                        completed_count, total_count, Path(file_path).name)
-                except Exception as cb_err:
-                    warning(f"進度回報回呼發生異常: {cb_err}")
-            return result
-
-        # 並行執行所有上傳任務
-        tasks = [_upload_and_report(p) for p in file_paths]
-        results = await asyncio.gather(*tasks)
-
-        # 過濾掉失敗的 None 結果
-        successful_uploads = [res for res in results if res is not None]
-        info(f"批量上傳完成，成功 {len(successful_uploads)}/{len(file_paths)} 筆檔案")
-        return successful_uploads
-
-    async def _retry_on_401(self, operation):
-        """
-        當遇到 401 錯誤時，嘗試重新認證後重試操作。
-        若重新認證失敗，則拋出原始錯誤。
-        """
-        try:
-            return await operation()
-        except RefreshError:
-            error("Google API Token 過期，正在重新認證...")
-            if self._gs.refresh_or_reauth():
-                info("Token 已更新，重試操作...")
-                return await operation()
-            else:
-                warning("Token 無法自動更新，請重新登入 Google API 認證")
-                raise RefreshError(
-                    "Google API Token 過期且無法自動更新，請重新登入認證"
-                )
+    @staticmethod
+    def _result(
+        name: str,
+        *,
+        success: bool,
+        file_id: str = "",
+        action: str,
+        error_code: str = "",
+        message: str = "",
+    ) -> dict:
+        return {
+            "name": name,
+            "success": success,
+            "file_id": file_id,
+            "action": action,
+            "error_code": error_code,
+            "message": message,
+        }

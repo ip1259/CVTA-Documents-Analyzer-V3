@@ -6,16 +6,15 @@ import re
 from typing import Any
 from googleapiclient.errors import HttpError
 
-from config import settings
-from infrastructure.google_workspace import GoogleServiceAccount
-from infrastructure.logger import info, error, warning
+from src.config import settings
+from src.infrastructure.google_workspace import GoogleServiceAccount
+from src.infrastructure.logger import info, error, warning
 
 
 class GoogleSheetsError(Exception):
     """Google Sheets API 錯誤例外類別。"""
 
 
-# 表格欄位定義
 SHEET_COLUMNS = [
     "NO.",
     "日期",
@@ -48,7 +47,6 @@ class GoogleSheetsService:
             raise GoogleSheetsError("Google API 服務帳戶未認證")
 
         self._service = google_account_service.sheets_service
-        # 優先使用傳入的 ID，否則尋找設定檔中的 GOOGLE_SPREADSHEET_ID
         self.spreadsheet_id = spreadsheet_id or getattr(
             settings, "GOOGLE_SPREADSHEET_ID", None)
 
@@ -67,7 +65,6 @@ class GoogleSheetsService:
             info(
                 f"正在同步 {len(values)} 筆資料至 Google Sheets (ID: {self.spreadsheet_id})")
 
-            # 執行 Append 操作
             response = self._service.spreadsheets().values().append(
                 spreadsheetId=self.spreadsheet_id,
                 range=sheet_range,
@@ -75,7 +72,6 @@ class GoogleSheetsService:
                 body={"values": values}
             ).execute()
 
-            # 取得新增加的範圍，並根據該範圍套用前一列的格式
             updated_range = response.get("updates", {}).get("updatedRange")
             if updated_range:
                 self._apply_format_from_previous_row(updated_range)
@@ -94,19 +90,17 @@ class GoogleSheetsService:
             if "!" not in range_name:
                 return
 
-            # 解析範圍字串，例如 "Sheet1!A10:M12"
             sheet_name, cell_range = range_name.split("!")
             sheet_name = sheet_name.strip("'")
 
-            # 使用正則表達式提取所有列號
             row_numbers = [int(n) for n in re.findall(r"\d+", cell_range)]
             if not row_numbers:
                 return
 
-            start_row = row_numbers[0]  # 起始列號 (1-based)
-            end_row = row_numbers[-1]    # 結束列號
+            # A1 notation uses 1-based rows; GridRange uses 0-based indexes.
+            start_row = row_numbers[0]
+            end_row = row_numbers[-1]
 
-            # 只有當起始列大於 1 時（即上方有其他列），才進行格式複製
             if start_row > 1:
                 self._copy_format(sheet_name, start_row, end_row)
         except Exception as e:
@@ -136,7 +130,6 @@ class GoogleSheetsService:
     def _get_last_row(self, sheet_name: str) -> int:
         """透過讀取 A 欄來取得指定工作表中有資料的最後一列列號 (1-based)。"""
         try:
-            # 讀取 A 欄的所有值
             result = self._service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
                 range=f"'{sheet_name}'!A:A"
@@ -146,15 +139,12 @@ class GoogleSheetsService:
             return len(values)
         except Exception as e:
             error(f"取得工作表 '{sheet_name}' 最後一列列號失敗: {e}")
-            # 發生錯誤時回傳 0 或視情況拋出異常
             return -1
 
     def _copy_format(self, sheet_name: str, start_row: int, end_row: int) -> None:
         """執行格式複製請求。"""
         sheet_id = self._get_sheet_id(sheet_name)
 
-        # Google Sheets API 的 GridRange 是 0-indexed，且 end 是 exclusive (不包含)
-        # 來源列 index 為 start_row - 2 (即 A1 序號的前一個列號轉為 index)
         source_row_index = start_row - 2
 
         requests = [{
@@ -193,44 +183,38 @@ class GoogleSheetsService:
             row_data: 包含 OCR 解析結果與 serial_number 的字典。
             image_id: 該公文圖檔在 Google Drive 的 ID。
         """
-        # 1. 處理日期與民國年計算 (資職OOOXXX 中的 OOO)
         doc_date = row_data.get("doc_date", "")
         roc_year_str = ""
         if doc_date and len(doc_date) >= 4:
             try:
-                # 西元年 - 1911 = 民國年
                 roc_year_str = str(int(doc_date[:4]) - 1911)
             except (ValueError, TypeError):
                 pass
 
-        # 2. 處理流水號 (資職OOOXXX 中的 XXX)
         raw_sn = row_data.get("serial_number", "")
         sn_display = str(raw_sn)
         sn_padded = sn_display.zfill(3)
 
-        # 3. 組合公文編號 (格式: 資職OOOXXX)
         doc_id = f"資職{roc_year_str}{sn_padded}"
 
-        # 4. 生成第一欄 NO. 的超連結公式
-        # 如果沒有 image_id，則只顯示純數字
         no_cell = GoogleSheetsService.generate_google_drive_link(
             image_id, sn_display)
 
-        # 依照 SHEET_COLUMNS 定義的順序回傳列表
+        # 欄位順序必須與 Google Sheets 範本一致。
         return [
-            no_cell,                          # NO. (Hyperlink)
-            doc_date,                         # 日期
-            row_data.get("related_class", ""),  # 班級
-            row_data.get("doc_from", ""),     # 發文機關
-            "函",                             # 文別 (固定值)
-            row_data.get("doc_category", ""),  # 原文字號-字別
-            "字第",                           # 原文字號-字第
-            row_data.get("doc_number", ""),   # 原文字號-文號
-            "號",                             # 原文字號-號
-            row_data.get("key_points", ""),   # 事由 (摘要)
-            row_data.get("case_officer", ""),  # 承辦人
-            "中華職訓",                       # 單位 (固定值)
-            doc_id                            # 公文編號
+            no_cell,
+            doc_date,
+            row_data.get("related_class", ""),
+            row_data.get("doc_from", ""),
+            "函",
+            row_data.get("doc_category", ""),
+            "字第",
+            row_data.get("doc_number", ""),
+            "號",
+            row_data.get("key_points", ""),
+            row_data.get("case_officer", ""),
+            "中華職訓",
+            doc_id
         ]
 
     @staticmethod
