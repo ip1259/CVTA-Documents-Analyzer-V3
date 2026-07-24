@@ -15,3 +15,6 @@ src/config/google_key.json
 antigravity.config.json
 google_spreadsheet_append.txt
 thread_safety.log
+
+build/
+dist/
