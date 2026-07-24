@@ -6,16 +6,16 @@ from pathlib import Path
 from tkinter import messagebox, filedialog
 import asyncio
 from src.config.settings import DATA_DIR, OUTPUT_DIR, VERSION
-from src.infrastructure.logger import info, catch_exception
+from src.infrastructure.logger import catch_exception, info, initialize_logging
 
 
 @catch_exception
 def main():
+    initialize_logging()
     """主程式入口 - 批次選檔處理"""
     info("===== CVTA 公文 OCR 歸納系統 =====")
     info(f"系統版本：{VERSION if 'VERSION' in globals() else '3.0.0'}")
 
-    # 批次選檔視窗
     file_paths = filedialog.askopenfilenames(
         title="選取公文掃描檔 (可多選)",
         filetypes=[("圖片檔案", "*.jpg *.jpeg *.png"), ("所有檔案", "*.*")]
@@ -29,17 +29,23 @@ def main():
     info(f"選取檔案數量：{len(file_list)}")
     info(f"儲存目錄：{Path(__file__).parent.parent.parent / DATA_DIR / OUTPUT_DIR}")
 
-    # 呼叫處理協調器
     from src.domain.orchestrator import DocumentProcessor
 
     processor = DocumentProcessor(
         prompts_path="config/prompts.json"
     )
 
-    # 執行批次處理任務
     result = asyncio.run(processor.process_batch(file_list))
 
-    # 輸出結果統計
+    if result.get("service_error"):
+        service_error = result["service_error"]
+        messagebox.showerror(
+            "AI 服務確認失敗",
+            f"[{service_error['error_code']}]\n"
+            f"{service_error['message']}"
+        )
+        sys.exit(1)
+
     if result["success"] > 0 or result["failed"] == 0:
         info(f"批次處理完成：成功 {result['success']} 筆, 失敗 {result['failed']} 筆")
         info(f"CSV 檔案：{result['csv_file']}")
