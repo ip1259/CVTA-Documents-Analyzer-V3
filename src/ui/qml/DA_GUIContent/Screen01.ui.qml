@@ -21,11 +21,9 @@ Rectangle {
     Layout.minimumHeight: 810
     scale: 1
 
-    // 💡 1. 暴露 TableView 的 model 與選取狀態，讓 App.qml 處理綁定
     property alias tableModel: tableView.model
     property alias selectedRow: tableView.selectedRow
 
-    // 💡 2. 暴露各個輸入框的 text 屬性（使用別名最方便）
     property alias unitText: textFrom.text
     property alias dateText: textDate.text
     property alias officerText: textOfficer.text
@@ -34,10 +32,8 @@ Rectangle {
     property alias classText: textClass.text
     property alias keyPointText: textKeyPoint.text
 
-    // 💡 3. 暴露圖片的 source
     property alias imageSource: img.source
 
-    // 💡 4. 定義按鈕被點擊的訊號，讓 App.qml 去接
     signal addClicked
     signal analyzeClicked
     signal uploadClicked
@@ -96,7 +92,6 @@ Rectangle {
                             width: pinchArea.baseSizeWidth
                             height: pinchArea.baseSizeHeight
 
-                            // 讓縮放後的內容始終置中（如果小於視窗的話）
                             anchors.centerIn: parent
 
                             Image {
@@ -117,14 +112,12 @@ Rectangle {
                             target: pinchArea
                             onPinchStarted: flickable.interactive = false
                             onPinchUpdated: pinch => {
-                                                // 計算縮放比例
                                                 let newScale = currentScale * pinch.scale
                                                 if (newScale < minScale)
                                                 newScale = minScale
                                                 if (newScale > maxScale)
                                                 newScale = maxScale
 
-                                                // 動態調整容器的寬高來達到縮放效果（比直接改 scale 更不易變形且與 Flickable 相容性好）
                                                 imageContainer.width
                                                 = pinchArea.baseSizeWidth * newScale
                                                 imageContainer.height
@@ -133,7 +126,7 @@ Rectangle {
                             onPinchFinished: pinch => {
                                                  currentScale = imageContainer.width
                                                  / pinchArea.baseSizeWidth
-                                                 flickable.interactive = true // 縮放結束，重新啟用拖曳
+                                                 flickable.interactive = true
                                              }
                         }
 
@@ -163,7 +156,7 @@ Rectangle {
                                                  wheel.accepted = true
                                              } else {
                                                  wheel.accepted
-                                                 = false // 如果沒按 Ctrl，把滾輪事件傳給 Flickable
+                                                 = false
                                              }
                                          }
                             }
@@ -247,7 +240,6 @@ Rectangle {
                                                    } else {
                                                        tableView.selectedRow = tableView.rows - 1
                                                    }
-                                                   // 滾動到選取列
                                                    let targetY = 0
                                                    for (var i = 0; i < tableView.selectedRow; i++) {
                                                        let h = tableView.rowHeight(
@@ -258,10 +250,9 @@ Rectangle {
                                                    let rowH = tableView.rowHeight(
                                                        tableView.selectedRow)
                                                    rowH = rowH > 0 ? rowH : 45
-                                                   // 若選取列在可視區域之上，滾動到該列頂部
                                                    if (targetY < tableView.contentY) {
                                                        tableView.contentY = targetY
-                                                   } else // 若選取列在可視區域之下，滾動到該列底部對齊視窗底部
+                                                   } else
                                                    if (targetY + rowH > tableView.contentY
                                                        + tableView.height) {
                                                        tableView.contentY = targetY
@@ -490,7 +481,6 @@ Rectangle {
                                                    } else {
                                                        tableView.selectedRow = 0
                                                    }
-                                                   // 滾動到選取列
                                                    let targetY = 0
                                                    for (var i = 0; i < tableView.selectedRow; i++) {
                                                        let h = tableView.rowHeight(
@@ -743,9 +733,7 @@ Rectangle {
                                                  let notches = wheel.angleDelta.y / Math.abs(
                                                      wheel.angleDelta.y) * 1
                                                  if (wheel.modifiers & Qt.ShiftModifier) {
-                                                     // 左右：動態取得欄位寬度，若目標未渲染則使用當前欄位寬度作為基準
                                                      if (notches < 0) {
-                                                         // 往右滾動
                                                          let w = tableView.columnWidth(
                                                              tableView.leftColumn)
                                                          w = (w > 0 ? w : 150)
@@ -757,7 +745,6 @@ Rectangle {
                                                                  tableView.contentWidth
                                                                  - tableView.width))
                                                      } else {
-                                                         // 往左滾動
                                                          let prevCol = Math.max(
                                                              0,
                                                              tableView.leftColumn - 1)
@@ -773,9 +760,7 @@ Rectangle {
                                                              tableView.contentX - w)
                                                      }
                                                  } else {
-                                                     // 上下：動態取得列高度，若目標未渲染則使用當前列高度作為基準
                                                      if (notches < 0) {
-                                                         // 往下滾動
                                                          let h = tableView.rowHeight(
                                                              tableView.topRow)
                                                          h = (h > 0 ? h : 45) + tableView.rowSpacing
@@ -786,7 +771,6 @@ Rectangle {
                                                                  tableView.contentHeight
                                                                  - tableView.height))
                                                      } else {
-                                                         // 往上滾動
                                                          let prevRow = Math.max(
                                                              0,
                                                              tableView.topRow - 1)
@@ -806,15 +790,12 @@ Rectangle {
                                 }
                             }
 
-                            // 💡 符合 Design Studio 規範的 Delegate
                             delegate: Rectangle {
                                 id: cellRectangle
 
-                                // Design Studio 規範：使用 required property 接收 TableView 的內建索引
                                 required property int row
                                 required property int column
 
-                                // 接收來自 model 的資料（由外部或系統注入）
                                 property string cellText: display
                                 property bool isSelected: tableView.selectedRow === row
                                 property bool isHovered: tableView.hoveredRow === row
@@ -825,10 +806,9 @@ Rectangle {
                                 implicitHeight: 45
                                 color: cellBackgroundColor
 
-                                // 分隔線
                                 Rectangle {
                                     height: 1
-                                    color: "#15ffffff" // 改為半透明白以符合深色主題
+                                    color: "#15ffffff"
                                     anchors.bottom: parent.bottom
                                     anchors.left: parent.left
                                     anchors.right: parent.right
@@ -841,7 +821,6 @@ Rectangle {
                                     anchors.bottom: parent.bottom
                                 }
 
-                                // 點擊與懸停偵測 (使用 Connections 遵守 Design Studio 規範)
                                 TapHandler {
                                     id: tapHandler
                                 }
@@ -869,10 +848,10 @@ Rectangle {
                                 }
 
                                 Text {
-                                    text: cellRectangle.cellText // 綁定到自訂屬性
+                                    text: cellRectangle.cellText
                                     anchors.fill: parent
                                     anchors.margins: 10
-                                    color: (cellRectangle.column === 0) ? Material.accentColor : Material.foreground // 第0欄使用 Accent color，其餘用淺灰色
+                                    color: (cellRectangle.column === 0) ? Material.accentColor : Material.foreground
                                     verticalAlignment: Text.AlignVCenter
                                     horizontalAlignment: (cellRectangle.column === 0) ? Text.AlignHCenter : Text.AlignLeft
                                     font.pointSize: 11

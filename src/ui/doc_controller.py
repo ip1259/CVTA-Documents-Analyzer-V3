@@ -1,4 +1,5 @@
 from queue import Queue, Empty
+import configparser
 import threading
 from PySide6.QtWidgets import QProgressDialog
 import re
@@ -7,23 +8,23 @@ from PySide6.QtCore import QObject, Property, Signal, Slot, Qt, QThread
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from typing import Optional, List, Any, Generator, Tuple
 
-from infrastructure.document import Document
-from infrastructure.google_workspace import GoogleServiceAccount, ConflictChoice
-from infrastructure.data_storage import StorageBackend
-from ui.table_model import DocumentTableModel
-from infrastructure.logger import info, error
+from src.infrastructure.document import Document
+from src.infrastructure.google_workspace import GoogleServiceAccount, ConflictChoice
+from src.infrastructure.data_storage import StorageBackend
+from src.ui.table_model import DocumentTableModel
+from src.infrastructure.logger import info, error
 import asyncio
-from domain.orchestrator import DocumentProcessor
+from src.domain.orchestrator import DocumentProcessor
+from src.config import settings
 
 
 class ProcessThread(QThread):
-    # 直接在 QThread 中宣告 Signals
     errorOccurred = Signal(str)
     progressUpdated = Signal(int, str)
-    finished = Signal(object)  # 使用 object 代替 Any
+    finished = Signal(object)
 
     def __init__(self, action_generator: Generator[Tuple[int, str], Any, Any]):
-        super().__init__()  # 關鍵修正：確保 QThread 底層正確初始化
+        super().__init__()
         self.action_generator = action_generator
         self.stopFlag = False
 
@@ -50,7 +51,6 @@ class ProcessThread(QThread):
 
 
 class DocController(QObject):
-    # Signals
     selectedRowChanged = Signal()
     currentUnitChanged = Signal()
     currentDateChanged = Signal()
@@ -78,17 +78,16 @@ class DocController(QObject):
         self._currentImageSource = ""
         self._currentDocument: Optional[Document] = None
 
-        # 實例化資料後端
         self._storage = StorageBackend()
 
-        # 關鍵整合：從 StorageBackend 獲取公文列表，並初始化新的 DocumentTableModel
         self._documents_list: List[Document] = self._storage.get_all_documents(
         )
         self._tableModel = DocumentTableModel(self._documents_list, self)
 
         self._service_account = GoogleServiceAccount()
 
-        self._document_processor = DocumentProcessor()
+        # 延後建立 AI client，避免設定檔缺失或內容錯誤時阻止 GUI 啟動。
+        self._document_processor: Optional[DocumentProcessor] = None
 
         self._conflict_event = threading.Event()
         self._conflict_result = False
@@ -97,10 +96,13 @@ class DocController(QObject):
             Qt.ConnectionType.QueuedConnection
         )
 
-        # 內部狀態旗標，避免自動儲存與載入資料時發生死循環
         self._is_loading_document = False
 
-    # ── Property: selectedRow ──
+    @Property(bool, constant=True)
+    def shouldOpenSettings(self):
+        """設定檔於本次啟動建立時，要求 GUI 顯示設定介面。"""
+        return bool(settings.CONFIG_WAS_CREATED)
+
     @Property(int, notify=selectedRowChanged)
     def selectedRow(self):
         return self._selectedRow
@@ -114,22 +116,18 @@ class DocController(QObject):
             self._selectedRow = value
             self.selectedRowChanged.emit()
 
-            # 關鍵修正：不再透過 tableModel.data() 讀取整個字典
-            # 由於 tableModel 目前為唯讀，且共享相同的 list 參照，直接由內部列表取得物件
             selected_doc = self._documents_list[value]
 
-            # 將選中的文件載入至當前編輯快取
             self._update_current_document(selected_doc)
         else:
             self._selectedRow = -1
             self.selectedRowChanged.emit()
             self._update_current_document(None)
 
-    # ── 核心修正：將資料同步與使用者編輯分離 ──
     def _update_current_document(self, doc: Optional[Document]):
         """內部方法：切換當前公文，並同步 UI 屬性，此時不應該觸發儲存"""
         self._currentDocument = doc
-        self._is_loading_document = True  # 開啟阻斷旗標
+        self._is_loading_document = True
 
         if doc:
             self._currentUnit = doc.doc_from
@@ -150,7 +148,6 @@ class DocController(QObject):
             self._currentKeyPoint = ""
             self._currentImageSource = ""
 
-        # 集中發送變更通知，通知 QML 刷新介面
         self.currentUnitChanged.emit()
         self.currentDateChanged.emit()
         self.currentOfficerChanged.emit()
@@ -161,9 +158,8 @@ class DocController(QObject):
         self.currentImageSourceChanged.emit()
         self.currentDocumentChanged.emit()
 
-        self._is_loading_document = False  # 關閉阻斷旗標
+        self._is_loading_document = False
 
-    # ── Property: 各項公文屬性（供 QML 修改表單雙向綁定） ──
     @Property(str, notify=currentUnitChanged)
     def currentUnit(self):
         return self._currentUnit
@@ -310,7 +306,6 @@ class DocController(QObject):
     def tableModel(self):
         return self._tableModel
 
-    # ── Slots ──
     @Slot()
     def addDocument(self):
         """
@@ -321,19 +316,16 @@ class DocController(QObject):
         file_dialog.setNameFilter("Images (*.png *.jpg *.jpeg)")
 
         if not file_dialog.exec_():
-            return  # 使用者取消選擇
+            return
 
         file_paths = file_dialog.selectedFiles()
         if not file_paths:
             return
 
-        # 1. 建立背景任務產生器
         task_generator = self._add_documents_generator(file_paths)
 
-        # 2. 初始化 QThread
         self._add_doc_thread = ProcessThread(task_generator)
 
-        # 3. 建立並設定進度條對話框
         self._progress_dialog = QProgressDialog("正在準備處理檔案...", "取消", 0, 100)
         self._progress_dialog.setWindowTitle("匯入檔案進度")
         self._progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
@@ -342,9 +334,7 @@ class DocController(QObject):
         self._progress_dialog.setMinimumDuration(500)
         self._progress_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
-        # 4. 定義信號槽回呼函數
         def onFinish(result):
-            # 關閉進度條
             self._progress_dialog.close()
 
             if result is None:
@@ -352,12 +342,10 @@ class DocController(QObject):
 
             success_count, error_messages = result
 
-            # 關鍵同步：任務完成後，重新讀取本地資料並刷新視圖
             self._documents_list.clear()
             self._documents_list.extend(self._storage.get_all_documents())
             self._tableModel.refresh_all()
 
-            # 顯示處理結果
             if error_messages:
                 error_summary = f"成功匯入 {success_count} 筆檔案。\n部分檔案處理失敗（共 {len(error_messages)} 筆）："
                 error_details = "\n".join(error_messages)
@@ -387,7 +375,6 @@ class DocController(QObject):
             self._progress_dialog.setValue(progress)
             self._progress_dialog.setLabelText(status)
 
-        # 5. 綁定訊號與生命週期事件
         self._add_doc_thread.progressUpdated.connect(
             onProgressUpdated, Qt.ConnectionType.QueuedConnection)
         self._add_doc_thread.errorOccurred.connect(
@@ -396,7 +383,6 @@ class DocController(QObject):
             onFinish, Qt.ConnectionType.QueuedConnection)
         self._progress_dialog.canceled.connect(self._add_doc_thread.stop)
 
-        # 6. 啟動任務並顯示進度條
         self._progress_dialog.show()
         self._add_doc_thread.start()
 
@@ -410,38 +396,31 @@ class DocController(QObject):
         error_messages = []
         total_files = len(file_paths)
 
-        # 這裡將 Regex 簡化：開頭 6 位數字，底線後接任意字元與副檔名
         pattern = re.compile(r"^(\d{6})_.*\.(?:png|jpg|jpeg)$", re.IGNORECASE)
 
         for index, file_path in enumerate(file_paths):
-            # 【取消安全性檢查】檢查使用者是否在中途點擊了進度條的「取消」
             if hasattr(self, "_add_doc_thread") and self._add_doc_thread.stopFlag:
                 error_messages.append("使用者手動中止後續檔案處理")
                 break
 
             file_name = Path(file_path).name
 
-            # 進度計算
             progress = int((index / total_files) * 100)
             yield progress, f"正在處理 ({index + 1}/{total_files}): {file_name}"
 
-            # 1. 檢查資料庫中是否已有該路徑紀錄
             if self._storage.get_document_by_id(file_path):
                 error_messages.append(f"檔案 {file_name} 已存在於資料庫中，不重複加入")
                 continue
 
-            # 2. 正則表達式匹配
             match = pattern.match(file_name)
             if not match:
                 error_messages.append(f"檔名 {file_name} 不符合規則 (需為 6碼數字_檔名)，不加入")
                 continue
 
             try:
-                # 3. 建立 Document 物件並寫入
                 doc = Document()
                 doc.image_source = file_path
 
-                # 僅保留你需要的：取 6 位數字的後 3 碼 (例如: 115062 -> 062)
                 doc.serial_number = match.group(1)[3:6]
 
                 self._storage.add_document(doc)
@@ -457,19 +436,27 @@ class DocController(QObject):
         """
         批次分析所有尚未分析的公文（仿照 addDocument 的 Threading & Progress 模式）。
         """
-        # 1. 檢查是否有需要分析的公文
+        try:
+            if self._document_processor is None:
+                self._document_processor = DocumentProcessor()
+        except Exception as exc:
+            error(f"AI 後端初始化失敗: {exc}", exc_info=True)
+            QMessageBox.critical(
+                None,
+                "AI 設定錯誤",
+                f"無法建立 AI 後端，請先修正設定：\n{exc}"
+            )
+            return
+
         all_docs = self._storage.get_all_documents()
         if not all_docs:
             QMessageBox.information(None, "提示", "目前資料庫中無任何公文可供分析。")
             return
 
-        # 2. 建立背景任務產生器
         task_generator = self._analyze_documents_generator()
 
-        # 3. 初始化 ProcessThread
         self._analyze_doc_thread = ProcessThread(task_generator)
 
-        # 4. 建立並設定進度條對話框
         progress_dialog = QProgressDialog("準備進行公文分析與驗證...", "取消", 0, 100)
         progress_dialog.setWindowTitle("公文批次分析進度")
         progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
@@ -477,17 +464,14 @@ class DocController(QObject):
         progress_dialog.setAutoReset(True)
         progress_dialog.setMinimumDuration(500)
 
-        # 告訴 Qt 在對話框關閉時自動釋放其記憶體
         progress_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
-        # 5. 定義信號槽回呼函數
         def onFinish(result):
             progress_dialog.close()
 
             if result is None:
                 return
 
-            # 如果是被取消的
             if result.get("cancelled"):
                 QMessageBox.information(None, "已取消", "分析程序已中止。")
                 return
@@ -496,17 +480,14 @@ class DocController(QObject):
             success = result.get("success", 0)
             failed = result.get("failed", 0)
 
-            # 關鍵同步：分析完成後，資料庫中的欄位已更新，重新載入 list 並整理 UI TableModel
             self._documents_list.clear()
             self._documents_list.extend(self._storage.get_all_documents())
             self._tableModel.refresh_all()
 
-            # 如果當前有選中的列，也必須刷新編輯表單中的資料
             if self._selectedRow != -1:
                 selected_doc = self._documents_list[self._selectedRow]
                 self._update_current_document(selected_doc)
 
-            # 顯示分析結果摘要
             summary_text = f"公文分析流程執行完畢！\n\n總共處理: {total} 筆\n成功筆數: {success} 筆\n失敗筆數: {failed} 筆"
             if failed > 0:
                 QMessageBox.warning(None, "分析完成（含失敗）", summary_text)
@@ -525,13 +506,11 @@ class DocController(QObject):
             progress_dialog.setValue(progress)
             progress_dialog.setLabelText(status)
 
-        # 6. 綁定訊號與生命週期事件
         progress_dialog.canceled.connect(self._analyze_doc_thread.stop)
         self._analyze_doc_thread.finished.connect(onFinish)
         self._analyze_doc_thread.errorOccurred.connect(onError)
         self._analyze_doc_thread.progressUpdated.connect(onProgressUpdated)
 
-        # 7. 啟動執行緒與顯示 UI
         progress_dialog.show()
         self._analyze_doc_thread.start()
 
@@ -540,11 +519,10 @@ class DocController(QObject):
         同步/非同步橋接產生器。
         負責在背景執行緒中運行 asyncio event loop，驅動 StorageBackend 的非同步分析流程。
         """
-        # 建立專屬於此背景執行緒的事件迴圈
+        # QThread 沒有事件迴圈；在工作執行緒建立專用 loop。
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        # 獲取 StorageBackend 的非同步產生器
         async_gen = self._storage.analyze_all_documents_generator(
             self._document_processor)
 
@@ -552,31 +530,24 @@ class DocController(QObject):
             """負責迭代非同步產生器，並將值傳回同步外層"""
             results = None
             try:
-                # 迭代非同步產生器
                 async for progress_percent, status_msg in async_gen:
                     if self._analyze_doc_thread.stopFlag:
-                        # 偵測到使用者點擊取消
                         break
 
-                    # 處理特殊的結束訊號
                     if progress_percent == "RESULT":
                         results = status_msg
                     else:
-                        # 將進度往外傳
                         yield_queue.put_nowait((progress_percent, status_msg))
             except Exception as e:
                 yield_queue.put_nowait(("ERROR", e))
             finally:
                 yield_queue.put_nowait(("DONE", results))
 
-        # 使用 Queue 來做為 async 協程與同步 generator 之間的通訊管道
         yield_queue = asyncio.Queue()
 
-        # 將協程放進背景 loop 執行
         task = loop.create_task(run_and_forward())
 
         while True:
-            # 檢查執行緒停止旗標，若被取消則取消 async task
             if hasattr(self, "_analyze_doc_thread") and self._analyze_doc_thread.stopFlag:
                 task.cancel()
                 loop.run_until_complete(
@@ -584,22 +555,19 @@ class DocController(QObject):
                 yield 100, "操作已由使用者取消"
                 return {"total": 0, "success": 0, "failed": 0, "cancelled": True}
 
-            # 驅動事件迴圈，處理 pending 的 async 任務
             loop.run_until_complete(asyncio.sleep(0.05))
 
-            # 取出 queue 裡的進度回報給 GUI
             while not yield_queue.empty():
                 item = yield_queue.get_nowait()
 
                 if item[0] == "ERROR":
                     loop.close()
-                    raise item[1]  # 拋出異常，將由 WorkerBase._safe_execute 捕獲
+                    raise item[1]
 
                 if item[0] == "DONE":
                     loop.close()
-                    return item[1]  # 傳回最終統計數據（結束 generator）
+                    return item[1]
 
-                # 一般進度回報 (百分比, 訊息)
                 yield item[0], item[1]
 
     @Slot()
@@ -607,19 +575,16 @@ class DocController(QObject):
         """
         上傳公文圖檔至 Google Drive，並同步資料至 Google Sheets。
         """
-        # 1. 檢查是否有資料
         all_docs = self._storage.get_all_documents()
         if not all_docs:
             QMessageBox.information(None, "提示", "目前無任何公文資料可供上傳。")
             return
 
-        # 2. 建立背景任務產生器
+        self._upload_cancel_event = threading.Event()
         task_generator = self._upload_documents_generator()
 
-        # 3. 初始化 ProcessThread
         self._upload_doc_thread = ProcessThread(task_generator)
 
-        # 4. 建立並設定進度條對話框
         self._upload_progress_dialog = QProgressDialog(
             "準備上傳至 Google 雲端硬碟...", "取消", 0, 100)
         self._upload_progress_dialog.setWindowTitle("雲端同步進度")
@@ -631,7 +596,6 @@ class DocController(QObject):
         self._upload_progress_dialog.setAttribute(
             Qt.WidgetAttribute.WA_DeleteOnClose)
 
-        # 5. 定義信號槽回呼函數
         def onFinish(result):
             try:
                 self._upload_progress_dialog.close()
@@ -642,10 +606,22 @@ class DocController(QObject):
                 return
 
             if result.get("cancelled"):
-                QMessageBox.information(None, "已取消", "上傳程序已中止（背景上傳可能仍在進行中）。")
+                QMessageBox.information(
+                    None,
+                    "已取消",
+                    "已停止啟動新上傳；進行中的請求已安全結束。"
+                )
                 return
 
-            # 雲端 ID (drive_file_id) 可能已更新，重新整理快取與表格
+            if result.get("failed", 0) > 0:
+                QMessageBox.warning(
+                    None,
+                    "上傳未完成",
+                    f"Drive 上傳失敗 {result['failed']} 筆，"
+                    "已取消 Google Sheets 同步。"
+                )
+                return
+
             self._documents_list.clear()
             self._documents_list.extend(self._storage.get_all_documents())
             self._tableModel.refresh_all()
@@ -670,9 +646,8 @@ class DocController(QObject):
             except RuntimeError:
                 pass
 
-        # 6. 綁定訊號與生命週期事件
         self._upload_progress_dialog.canceled.connect(
-            self._upload_doc_thread.stop)
+            self._upload_cancel_event.set)
 
         self._upload_doc_thread.finished.connect(
             onFinish, Qt.ConnectionType.QueuedConnection)
@@ -683,7 +658,6 @@ class DocController(QObject):
         self._upload_doc_thread.progressUpdated.connect(
             onProgressUpdated, Qt.ConnectionType.QueuedConnection)
 
-        # 7. 啟動執行緒與顯示 UI
         self._upload_progress_dialog.show()
         self._upload_doc_thread.start()
 
@@ -693,7 +667,6 @@ class DocController(QObject):
         """
         q = Queue()
 
-        # 封裝傳遞給 data_storage 的 Callback
         def progress_cb(progress_percent, filename):
             q.put(("PROGRESS", progress_percent, f"正在上傳: {filename}"))
 
@@ -702,33 +675,35 @@ class DocController(QObject):
 
         def worker_thread():
             try:
-                # 1. 執行 Google Drive 圖檔上傳
-                self._storage.upload_to_google_drive(
+                upload_summary = self._storage.upload_to_google_drive(
                     google_account_service=self._service_account,
                     progress_callback=progress_cb,
-                    conflict_callback=conflict_cb
+                    conflict_callback=conflict_cb,
+                    cancellation_event=self._upload_cancel_event
                 )
 
-                # 2. 執行 Google Sheets 資料同步
-                q.put(("PROGRESS", 95, "圖檔處理完畢，正在同步資料至 Google Sheets..."))
-                self._storage.sync_to_google_sheets(self._service_account)
+                if upload_summary["success"]:
+                    q.put(("PROGRESS", 95, "圖檔處理完畢，正在同步資料至 Google Sheets..."))
+                    self._storage.sync_to_google_sheets(
+                        self._service_account
+                    )
+                    upload_summary["sheets_synced"] = True
+                else:
+                    upload_summary["sheets_synced"] = False
 
-                q.put(("DONE", {"success": True}))
+                q.put(("DONE", upload_summary))
             except Exception as e:
                 q.put(("ERROR", e))
 
-        # 啟動實際執行上傳的背景 Daemon 執行緒
         t = threading.Thread(target=worker_thread)
         t.daemon = True
         t.start()
 
         while True:
-            # 檢查使用者是否按下 UI 的取消按鈕
             if hasattr(self, "_upload_doc_thread") and self._upload_doc_thread.stopFlag:
                 return {"cancelled": True}
 
             try:
-                # 使用 timeout 確保每隔 0.1 秒能檢查一次 stopFlag
                 item = q.get(timeout=0.1)
 
                 if item[0] == "PROGRESS":
@@ -740,7 +715,7 @@ class DocController(QObject):
                     raise Exception(str(item[1]))
 
             except Empty:
-                continue  # Queue 暫時為空，繼續下一輪迴圈檢查
+                continue
 
     @Slot(str)
     def handleConflictResolution(self, filename: str):
@@ -752,13 +727,11 @@ class DocController(QObject):
             "檔案衝突",
             f"雲端硬碟中已存在同名檔案：{filename}\n是否要覆寫檔案？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No  # 預設選項為「否」以保護資料
+            QMessageBox.StandardButton.No
         )
 
-        # 記錄使用者的選擇 (Yes=True 覆寫, No=False 不覆寫)
         self._conflict_result = (reply == QMessageBox.StandardButton.Yes)
 
-        # 發送信號解除背景執行緒的阻塞狀態
         self._conflict_event.set()
 
     @Slot()
@@ -766,14 +739,12 @@ class DocController(QObject):
         """開啟歸檔（讀取本地 JSON）"""
         try:
             self._storage.load_from_json()
-            # 重新整理快取列表並通知檢視刷新
             self._documents_list.clear()
             self._documents_list.extend(self._storage.get_all_documents())
             self._tableModel.refresh_all()
             info("歸檔資料已成功載入")
         except Exception as e:
             error(f"開啟歸檔失敗: {e}")
-            # msgbox
             QMessageBox.critical(
                 None,
                 "開啟歸檔失敗",
@@ -807,6 +778,107 @@ class DocController(QObject):
     def openSettings(self):
         print("開啟設定")
 
+    @Slot(result="QVariantMap")
+    def getSettings(self):
+        return {
+            "ollamaHost": str(settings.OLLAMA_HOST),
+            "ollamaModel": str(settings.OLLAMA_MODEL),
+            "healthTimeout": int(settings.OLLAMA_HEALTH_TIMEOUT),
+            "requestTimeout": int(settings.OLLAMA_REQUEST_TIMEOUT),
+            "promptsPath": str(settings.PROMPTS_PATH),
+            "spreadsheetId": str(settings.GOOGLE_SPREADSHEET_ID or ""),
+            "sheetName": str(settings.SHEET_NAME or ""),
+            "targetFolderName": str(settings.TARGET_FOLDER_NAME or ""),
+        }
+
+    @Slot(result=str)
+    def selectPromptsFile(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            None,
+            "選擇提示詞設定檔",
+            str(settings.CONFIG_DIR),
+            "JSON 檔案 (*.json)"
+        )
+        return file_path
+
+    @Slot("QVariantMap", result="QVariantMap")
+    def saveSettings(self, values):
+        host = str(values.get("ollamaHost", "")).strip().rstrip("/")
+        model = str(values.get("ollamaModel", "")).strip()
+        prompts_path = Path(
+            str(values.get("promptsPath", "")).strip()
+        ).expanduser()
+
+        if not host.startswith(("http://", "https://")):
+            return {
+                "success": False,
+                "message": "Ollama 位址必須以 http:// 或 https:// 開頭。"
+            }
+        if not model:
+            return {"success": False, "message": "請輸入 Ollama 模型名稱。"}
+        if not prompts_path.is_file() or prompts_path.suffix.lower() != ".json":
+            return {
+                "success": False,
+                "message": "提示詞設定檔必須是存在的 JSON 檔案。"
+            }
+
+        try:
+            health_timeout = int(values.get("healthTimeout", 5))
+            request_timeout = int(values.get("requestTimeout", 300))
+        except (TypeError, ValueError):
+            return {"success": False, "message": "逾時秒數必須是整數。"}
+
+        if health_timeout < 1 or request_timeout < 1:
+            return {"success": False, "message": "逾時秒數必須大於 0。"}
+
+        config_path = settings.CONFIG_DIR / "settings.cfg"
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(config_path, encoding="utf-8")
+        for section in ("Ollama", "Google"):
+            if not parser.has_section(section):
+                parser.add_section(section)
+
+        parser["Ollama"].update({
+            "OLLAMA_HOST": host,
+            "OLLAMA_MODEL": model,
+            "OLLAMA_HEALTH_TIMEOUT": str(health_timeout),
+            "OLLAMA_REQUEST_TIMEOUT": str(request_timeout),
+            "PROMPTS_PATH": str(prompts_path.resolve()),
+        })
+        parser["Google"].update({
+            "GOOGLE_SPREADSHEET_ID": str(
+                values.get("spreadsheetId", "")
+            ).strip(),
+            "SHEET_NAME": str(values.get("sheetName", "")).strip(),
+            "TARGET_FOLDER_NAME": str(
+                values.get("targetFolderName", "")
+            ).strip(),
+        })
+
+        try:
+            with config_path.open("w", encoding="utf-8") as config_file:
+                parser.write(config_file)
+
+            settings.OLLAMA_HOST = host
+            settings.OLLAMA_MODEL = model
+            settings.OLLAMA_HEALTH_TIMEOUT = health_timeout
+            settings.OLLAMA_REQUEST_TIMEOUT = request_timeout
+            settings.PROMPTS_PATH = prompts_path.resolve()
+            settings.GOOGLE_SPREADSHEET_ID = parser["Google"][
+                "GOOGLE_SPREADSHEET_ID"
+            ]
+            settings.SHEET_NAME = parser["Google"]["SHEET_NAME"]
+            settings.TARGET_FOLDER_NAME = parser["Google"][
+                "TARGET_FOLDER_NAME"
+            ]
+            # 下次分析時才依新設定建立 client；設定視窗不應因後端錯誤關閉失敗。
+            self._document_processor = None
+            info("設定已更新")
+            return {"success": True, "message": "設定已儲存並立即套用。"}
+        except Exception as exc:
+            error(f"儲存設定失敗: {exc}", exc_info=True)
+            return {"success": False, "message": f"儲存設定失敗：{exc}"}
+
     @Slot(int)
     def handleRowChanged(self, row):
         self.selectedRow = row
@@ -814,16 +886,12 @@ class DocController(QObject):
     def handleCurrentDocumentEdited(self):
         """當使用者透過側邊表單修改欄位時觸發此處"""
         if self._currentDocument:
-            # 1. 更新後端容器內的 Dict 數據
             self._storage.update_document(
                 self._currentImageSource, self._currentDocument)
 
-            # 2. 關鍵同步：因為表格唯讀，且可能涉及「NO./檔名」或「原文字號」的合併計算，
-            # 當欄位更動時，必須通知該列的 View 重新繪製
             if 0 <= self._selectedRow < self._tableModel.rowCount():
                 top_left = self._tableModel.index(self._selectedRow, 0)
                 bottom_right = self._tableModel.index(
                     self._selectedRow, self._tableModel.columnCount() - 1)
-                # 觸發 dataChanged，通知 QTableView 刷新當前橫列的文字
                 self._tableModel.dataChanged.emit(
                     top_left, bottom_right, [Qt.ItemDataRole.DisplayRole])

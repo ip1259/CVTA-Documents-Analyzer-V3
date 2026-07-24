@@ -12,7 +12,7 @@ from PySide6.QtCore import (
     QModelIndex,
 )
 
-from infrastructure.document import Document
+from src.infrastructure.document import Document
 
 
 class DocumentTableModel(QAbstractTableModel):
@@ -23,7 +23,6 @@ class DocumentTableModel(QAbstractTableModel):
         self._documents = documents
         self._controller = controller
 
-        # 定義顯式欄位對應（總共 7 欄）
         self._headers = [
             "NO.",
             "日期",
@@ -52,7 +51,6 @@ class DocumentTableModel(QAbstractTableModel):
             doc.key_points,
             doc.case_officer
         ]
-        # 只要有任何一個欄位去除空白後為空字串，即視為有空值
         return all(bool(str(field).strip()) for field in core_fields)
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
@@ -68,34 +66,33 @@ class DocumentTableModel(QAbstractTableModel):
         doc = self._documents[row]
 
         if role == Qt.DisplayRole:
-            if col == 0:  # NO.
+            if col == 0:
                 return doc.serial_number if self._is_doc_complete(doc) else f"!{doc.serial_number}!"
 
-            elif col == 1:  # 日期
+            elif col == 1:
                 return doc.doc_date
 
-            elif col == 2:  # 班級
+            elif col == 2:
                 return doc.related_class
 
-            elif col == 3:  # 發文機關
+            elif col == 3:
                 return doc.doc_from
 
-            elif col == 4:  # 原文字號 ("{doc_category}字第{doc_number}號")
+            elif col == 4:
                 category = doc.doc_category.strip()
                 number = doc.doc_number.strip()
                 if category or number:
                     return f"{category}字第{number}號"
                 return ""
 
-            elif col == 5:  # 事由
+            elif col == 5:
                 return doc.key_points
 
-            elif col == 6:  # 承辦人
+            elif col == 6:
                 return doc.case_officer
 
-        # 支援文字置中對齊（選用，提升 UI 美觀度）
         elif role == Qt.TextAlignmentRole:
-            if col in [0, 1, 2, 4, 6]:  # 代碼、日期、班級、字號、承辦人置中
+            if col in [0, 1, 2, 4, 6]:
                 return Qt.AlignCenter
             return Qt.AlignLeft | Qt.AlignVCenter
 
@@ -112,10 +109,8 @@ class DocumentTableModel(QAbstractTableModel):
     def flags(self, index: QModelIndex) -> Qt.ItemFlags:
         if not index.isValid():
             return Qt.ItemFlags()
-        # 移除 Qt.ItemIsEditable，確保 Table 保持唯讀狀態
         return Qt.ItemIsEnabled | Qt.ItemIsSelectable
 
-    # ── 外部資料更新通知 ──
     def refresh_all(self) -> None:
         """當外部表單修改完資料並儲存至後端後，由 Controller 呼叫此方法重新整理視圖。"""
         self.beginResetModel()

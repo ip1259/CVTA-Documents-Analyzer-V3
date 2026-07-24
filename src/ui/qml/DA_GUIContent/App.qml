@@ -53,6 +53,17 @@ Window {
         onOpenClicked: appWindow.docController.openArchive()
         onSaveClicked: appWindow.docController.saveArchive()
         onResetClicked: appWindow.docController.clearAllData()
-        onSettingsClicked: appWindow.docController.openSettings()
+        onSettingsClicked: settingsDialog.open()
+    }
+
+    SettingsDialog {
+        id: settingsDialog
+        anchors.centerIn: parent
+        docController: appWindow.docController
+    }
+
+    Component.onCompleted: {
+        if (appWindow.docController.shouldOpenSettings)
+            settingsDialog.open()
     }
 }
